@@ -1,0 +1,42 @@
+{
+  "configSchemaVersion": "1",
+  "environment": "live",
+  "logLevel": "info",
+  "binance": {
+    "feeRefreshIntervalMs": 86400000,
+    "feeSafetyBufferBps": 1
+  },
+  "symbols": ["BTCUSDT"],
+  "risk": {
+    "sessionLossCapQuote": 100,
+    "maxOpenNotionalQuote": 1000,
+    "defaultMinSpreadTicks": 5,
+    "maxDesiredLeverage": 50,
+    "riskMaxLeverage": 20,
+    "vpinBucketVolume": 1,
+    "vpinBucketBasis": "base",
+    "vpinEwmaN": 5,
+    "vpinStaleFlushMs": 60000,
+    "vpinTau": 0.6,
+    "rvEnabled": false,
+    "rvTau": 0.0005,
+    "maxAbsQty": 1,
+    "maxAbsNotional": 10000,
+    "globalMaxAbsNotional": 25000,
+    "inventoryEpsilon": 0,
+    "maxTimeAboveEpsilonMs": 60000,
+    "warnUtilization": 0.7,
+    "criticalUtilization": 0.85,
+    "haltUtilization": 0.95,
+    "preFundingFlattenMinutes": 0
+  },
+  "features": {
+    "markoutFeedbackEnabled": false,
+    "reconciliationIntervalOverrideEnabled": false,
+    "preFundingFlattenEnabled": false,
+    "regimeFlagsEnabled": false
+  },
+  "heartbeatIntervalMs": 5000,
+  "heartbeatMissThreshold": 3,
+  "perSymbolOverrides": []
+}

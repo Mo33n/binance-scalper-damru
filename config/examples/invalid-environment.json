@@ -1,0 +1,18 @@
+{
+  "configSchemaVersion": "1",
+  "environment": "paper",
+  "logLevel": "info",
+  "symbols": ["BTCUSDT"],
+  "risk": {
+    "sessionLossCapQuote": 100,
+    "maxOpenNotionalQuote": 1000
+  },
+  "features": {
+    "markoutFeedbackEnabled": false,
+    "reconciliationIntervalOverrideEnabled": false,
+    "preFundingFlattenEnabled": false
+  },
+  "heartbeatIntervalMs": 5000,
+  "heartbeatMissThreshold": 3,
+  "perSymbolOverrides": []
+}

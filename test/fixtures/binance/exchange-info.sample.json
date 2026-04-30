@@ -1,0 +1,26 @@
+{
+  "symbols": [
+    {
+      "symbol": "BTCUSDT",
+      "status": "TRADING",
+      "contractType": "PERPETUAL",
+      "contractSize": "1",
+      "filters": [
+        { "filterType": "PRICE_FILTER", "tickSize": "0.10" },
+        { "filterType": "LOT_SIZE", "stepSize": "0.001" },
+        { "filterType": "MIN_NOTIONAL", "minNotional": "5" }
+      ]
+    },
+    {
+      "symbol": "ETHUSDT",
+      "status": "BREAK",
+      "contractType": "PERPETUAL",
+      "contractSize": "1",
+      "filters": [
+        { "filterType": "PRICE_FILTER", "tickSize": "0.01" },
+        { "filterType": "LOT_SIZE", "stepSize": "0.001" },
+        { "filterType": "MIN_NOTIONAL", "minNotional": "5" }
+      ]
+    }
+  ]
+}

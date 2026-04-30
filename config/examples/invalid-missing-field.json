@@ -1,0 +1,15 @@
+{
+  "configSchemaVersion": "1",
+  "environment": "testnet",
+  "logLevel": "info",
+  "symbols": ["BTCUSDT"],
+  "risk": "invalid",
+  "features": {
+    "markoutFeedbackEnabled": false,
+    "reconciliationIntervalOverrideEnabled": false,
+    "preFundingFlattenEnabled": false
+  },
+  "heartbeatIntervalMs": 5000,
+  "heartbeatMissThreshold": 3,
+  "perSymbolOverrides": []
+}

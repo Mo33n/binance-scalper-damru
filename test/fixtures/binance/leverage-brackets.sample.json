@@ -1,0 +1,9 @@
+[
+  {
+    "symbol": "BTCUSDT",
+    "brackets": [
+      { "initialLeverage": 125, "notionalCap": 50000 },
+      { "initialLeverage": 100, "notionalCap": 250000 }
+    ]
+  }
+]

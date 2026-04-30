@@ -1,0 +1,48 @@
+{
+  "configSchemaVersion": "1",
+  "environment": "live",
+  "credentialProfile": "live",
+  "logLevel": "info",
+  "binance": {
+    "restBaseUrl": "https://fapi.binance.com",
+    "wsBaseUrl": "wss://fstream.binance.com/ws",
+    "feeRefreshIntervalMs": 86400000,
+    "feeSafetyBufferBps": 1
+  },
+  "symbols": ["BTCUSDT"],
+  "risk": {
+    "sessionLossCapQuote": 25,
+    "maxOpenNotionalQuote": 150,
+    "defaultMinSpreadTicks": 8,
+    "maxDesiredLeverage": 3,
+    "riskMaxLeverage": 3,
+    "vpinBucketVolume": 1,
+    "vpinBucketBasis": "base",
+    "vpinEwmaN": 5,
+    "vpinStaleFlushMs": 60000,
+    "vpinTau": 0.6,
+    "rvEnabled": false,
+    "rvTau": 0.0005,
+    "maxAbsQty": 0.05,
+    "maxAbsNotional": 150,
+    "globalMaxAbsNotional": 200,
+    "inventoryEpsilon": 0,
+    "maxTimeAboveEpsilonMs": 45000,
+    "warnUtilization": 0.65,
+    "criticalUtilization": 0.8,
+    "haltUtilization": 0.9,
+    "preFundingFlattenMinutes": 0
+  },
+  "features": {
+    "markoutFeedbackEnabled": false,
+    "reconciliationIntervalOverrideEnabled": false,
+    "preFundingFlattenEnabled": false,
+    "regimeFlagsEnabled": false
+  },
+  "rollout": {
+    "markoutPromotionWindowMs": 86400000
+  },
+  "heartbeatIntervalMs": 5000,
+  "heartbeatMissThreshold": 2,
+  "perSymbolOverrides": []
+}
