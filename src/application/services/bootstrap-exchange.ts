@@ -1,5 +1,6 @@
 import type { AppConfig } from "../../config/schema.js";
-import { BinanceRestClient } from "../../infrastructure/binance/rest-client.js";
+import { createRateLimitedBinanceRestClient } from "./rate-limited-binance-rest-client.js";
+import { monotonicNowMs } from "../../shared/monotonic.js";
 import { fetchExchangeInfo, buildSymbolBootstrap } from "../../infrastructure/binance/exchange-info.js";
 import { fetchEffectiveFees } from "../../infrastructure/binance/fees.js";
 import {
@@ -7,6 +8,7 @@ import {
   chooseLeverage,
   setSymbolLeverage,
 } from "../../infrastructure/binance/leverage.js";
+import type { BinanceRestClient } from "../../infrastructure/binance/rest-client.js";
 import { evaluateSpreadFloor } from "../../infrastructure/binance/spread-gate.js";
 import type { LoggerPort } from "../ports/logger-port.js";
 import type { EffectiveFees, SymbolSpec } from "../../infrastructure/binance/types.js";
@@ -29,7 +31,9 @@ export async function bootstrapExchangeContext(
   cfg: AppConfig,
   log: LoggerPort,
 ): Promise<BootstrapExchangeContext> {
-  const client = new BinanceRestClient({ baseUrl: cfg.binance.restBaseUrl, log });
+  const client = createRateLimitedBinanceRestClient({ baseUrl: cfg.binance.restBaseUrl, log }, () =>
+    monotonicNowMs(),
+  );
   const info = await fetchExchangeInfo(client);
   const bootstrap = buildSymbolBootstrap(info, cfg.symbols);
   for (const reject of bootstrap.rejected) {
@@ -62,10 +66,11 @@ export async function bootstrapExchangeContext(
   const acceptedSymbols: SymbolSpec[] = [];
 
   for (const s of bootstrap.accepted) {
+    const refPx = await fetchSpreadGateReferencePrice(client, s.symbol);
     const gate = evaluateSpreadFloor(
       s,
       fees,
-      1_000,
+      refPx,
       cfg.risk.defaultMinSpreadTicks,
       cfg.binance.feeSafetyBufferBps,
     );
@@ -112,4 +117,22 @@ export async function bootstrapExchangeContext(
   }
 
   return Object.freeze({ symbols: acceptedSymbols, fees, decisions });
+}
+
+/** Mark-price–consistent fee/spread gate input (USD-M linear); falls back if ticker fails. */
+async function fetchSpreadGateReferencePrice(
+  client: BinanceRestClient,
+  symbol: string,
+): Promise<number> {
+  try {
+    const row = await client.requestJson<{ price?: string }>({
+      path: "/fapi/v1/ticker/price",
+      query: { symbol },
+    });
+    const p = Number(row.price);
+    if (Number.isFinite(p) && p > 0) return p;
+  } catch {
+    /* ignore — bootstrap continues with conservative default */
+  }
+  return 1000;
 }

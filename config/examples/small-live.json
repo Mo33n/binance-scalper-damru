@@ -34,15 +34,22 @@
     "preFundingFlattenMinutes": 0
   },
   "features": {
+    "liveQuotingEnabled": false,
     "markoutFeedbackEnabled": false,
     "reconciliationIntervalOverrideEnabled": false,
     "preFundingFlattenEnabled": false,
-    "regimeFlagsEnabled": false
+    "regimeFlagsEnabled": false,
+    "useWorkerThreads": false
   },
   "rollout": {
     "markoutPromotionWindowMs": 86400000
   },
+  "quoting": {
+    "repriceMinIntervalMs": 250,
+    "maxBookStalenessMs": 3000
+  },
   "heartbeatIntervalMs": 5000,
   "heartbeatMissThreshold": 2,
+  "reconciliationIntervalMs": 60000,
   "perSymbolOverrides": []
 }

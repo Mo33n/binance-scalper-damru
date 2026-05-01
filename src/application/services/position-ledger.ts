@@ -17,6 +17,7 @@ export class PositionLedger {
   private readonly log: LoggerPort | undefined;
   private readonly positions = new Map<string, PositionState>();
   private readonly seenFills = new Set<string>();
+  private readonly fillListeners = new Set<(fill: FillEvent) => void>();
   private readonly aboveEpsilonSince = new Map<string, number>();
   private globalNotional = 0;
 
@@ -25,7 +26,12 @@ export class PositionLedger {
     this.log = log;
   }
 
-  onFill(fill: FillEvent, nowMs: number): void {
+  /** SPEC-09 — invoked once per deduped fill after ledger mutation (e.g. markout). */
+  registerFillListener(listener: (fill: FillEvent) => void): void {
+    this.fillListeners.add(listener);
+  }
+
+  applyFill(fill: FillEvent, nowMs: number): void {
     const key = `${fill.symbol}:${String(fill.orderId)}:${String(fill.tradeId)}`;
     if (this.seenFills.has(key)) return;
     this.seenFills.add(key);
@@ -43,6 +49,14 @@ export class PositionLedger {
       if (!this.aboveEpsilonSince.has(fill.symbol)) this.aboveEpsilonSince.set(fill.symbol, nowMs);
     } else {
       this.aboveEpsilonSince.delete(fill.symbol);
+    }
+
+    for (const fn of this.fillListeners) {
+      try {
+        fn(fill);
+      } catch {
+        this.log?.warn({ event: "ledger.fill_listener_error", symbol: fill.symbol }, "ledger.fill_listener_error");
+      }
     }
   }
 

@@ -1,28 +1,29 @@
 {
   "configSchemaVersion": "1",
   "environment": "testnet",
+  "credentialProfile": "testnet",
   "logLevel": "info",
   "binance": {
     "feeRefreshIntervalMs": 86400000,
     "feeSafetyBufferBps": 1
   },
-  "symbols": ["BTCUSDT"],
+  "symbols": ["DOTUSDT"],
   "risk": {
-    "sessionLossCapQuote": 100,
-    "maxOpenNotionalQuote": 1000,
+    "sessionLossCapQuote": 50,
+    "maxOpenNotionalQuote": 300,
     "defaultMinSpreadTicks": 5,
-    "maxDesiredLeverage": 50,
-    "riskMaxLeverage": 20,
+    "maxDesiredLeverage": 20,
+    "riskMaxLeverage": 10,
     "vpinBucketVolume": 1,
     "vpinBucketBasis": "base",
     "vpinEwmaN": 5,
     "vpinStaleFlushMs": 60000,
-    "vpinTau": 0.6,
+    "vpinTau": 0.99,
     "rvEnabled": false,
     "rvTau": 0.0005,
-    "maxAbsQty": 1,
-    "maxAbsNotional": 10000,
-    "globalMaxAbsNotional": 25000,
+    "maxAbsQty": 5,
+    "maxAbsNotional": 500,
+    "globalMaxAbsNotional": 800,
     "inventoryEpsilon": 0,
     "maxTimeAboveEpsilonMs": 60000,
     "warnUtilization": 0.7,
@@ -31,12 +32,20 @@
     "preFundingFlattenMinutes": 0
   },
   "features": {
+    "liveQuotingEnabled": true,
     "markoutFeedbackEnabled": false,
     "reconciliationIntervalOverrideEnabled": false,
     "preFundingFlattenEnabled": false,
-    "regimeFlagsEnabled": false
+    "regimeFlagsEnabled": false,
+    "useWorkerThreads": false
+  },
+  "quoting": {
+    "repriceMinIntervalMs": 400,
+    "maxBookStalenessMs": 10000,
+    "baseOrderQty": 5
   },
   "heartbeatIntervalMs": 5000,
   "heartbeatMissThreshold": 3,
+  "reconciliationIntervalMs": 60000,
   "perSymbolOverrides": []
 }

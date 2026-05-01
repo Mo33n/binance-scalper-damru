@@ -13,14 +13,44 @@ export type DepthApplyResult =
   | { readonly kind: "gap" };
 
 /**
- * Maintains top-of-book with Binance depth sequence guards.
- * Uses `pu` continuity when present and falls back to U/u checks.
+ * Reorders buffered websocket diffs so the first applied event overlaps REST snapshot `lastUpdateId` (L).
+ * Applying FIFO only is unsafe: an event with `U > L` may arrive before any diff whose `[U,u]` contains `L`,
+ * which would incorrectly trigger a gap even though a valid bridge event is already buffered.
+ */
+export function orderDepthDiffsForBridge(
+  anchorLastUpdateId: number,
+  pending: readonly DepthDiffEvent[],
+):
+  | { readonly ok: true; readonly events: readonly DepthDiffEvent[] }
+  | { readonly ok: false } {
+  const L = anchorLastUpdateId;
+  if (pending.length === 0) {
+    return { ok: true, events: [] };
+  }
+  const kept = pending.filter((e) => e.finalUpdateId >= L);
+  if (kept.length === 0) {
+    return { ok: true, events: [] };
+  }
+  const bridgeIdx = kept.findIndex((e) => e.firstUpdateId <= L && e.finalUpdateId >= L);
+  if (bridgeIdx === -1) {
+    return { ok: false };
+  }
+  return { ok: true, events: kept.slice(bridgeIdx) };
+}
+
+/**
+ * Maintains top-of-book with Binance USDS-M futures depth rules:
+ * after each REST snapshot, the first stream event must overlap the snapshot `lastUpdateId` (`U <= L <= u`);
+ * thereafter each event's `pu` must match the previous `u` (or U/u fallback when `pu` is absent).
  */
 export class DepthOrderBook {
   private readonly symbol: string;
   private readonly tickSize: number;
   private lastFinalUpdateId?: number;
   private synchronized = false;
+  /** Per Binance futures book sync: first diff after REST must overlap `[U,u]` with snapshot `lastUpdateId`. */
+  private snapshotAnchorId: number | undefined = undefined;
+  private awaitingSnapshotBridge = false;
   private lastAppliedMonotonicMs?: number;
   private bids = new Map<number, number>();
   private asks = new Map<number, number>();
@@ -36,6 +66,8 @@ export class DepthOrderBook {
     applyLevels(this.bids, raw.bids);
     applyLevels(this.asks, raw.asks);
     this.lastFinalUpdateId = raw.lastUpdateId;
+    this.snapshotAnchorId = raw.lastUpdateId;
+    this.awaitingSnapshotBridge = true;
     this.synchronized = true;
     this.lastAppliedMonotonicMs = monotonicNowMs();
     return this.currentSnapshot(undefined);
@@ -44,6 +76,30 @@ export class DepthOrderBook {
   applyDiff(evt: DepthDiffEvent): DepthApplyResult {
     if (!this.synchronized || this.lastFinalUpdateId === undefined) {
       return { kind: "ignored" };
+    }
+
+    if (this.awaitingSnapshotBridge && this.snapshotAnchorId !== undefined) {
+      const L = this.snapshotAnchorId;
+      if (evt.finalUpdateId < L) {
+        return { kind: "ignored" };
+      }
+      const overlaps = evt.firstUpdateId <= L && evt.finalUpdateId >= L;
+      if (!overlaps) {
+        if (evt.firstUpdateId > L) {
+          this.synchronized = false;
+          this.awaitingSnapshotBridge = false;
+          this.snapshotAnchorId = undefined;
+          return { kind: "gap" };
+        }
+        return { kind: "ignored" };
+      }
+      applyNumericLevels(this.bids, evt.bids);
+      applyNumericLevels(this.asks, evt.asks);
+      this.lastFinalUpdateId = evt.finalUpdateId;
+      this.awaitingSnapshotBridge = false;
+      this.snapshotAnchorId = undefined;
+      this.lastAppliedMonotonicMs = monotonicNowMs();
+      return { kind: "updated", snapshot: this.currentSnapshot(evt.eventTimeMs) };
     }
 
     if (evt.finalUpdateId <= this.lastFinalUpdateId) {
@@ -57,6 +113,8 @@ export class DepthOrderBook {
         (evt.firstUpdateId > expectedPrev + 1 || evt.finalUpdateId < expectedPrev + 1));
     if (hasGap) {
       this.synchronized = false;
+      this.awaitingSnapshotBridge = false;
+      this.snapshotAnchorId = undefined;
       return { kind: "gap" };
     }
 
@@ -79,6 +137,19 @@ export class DepthOrderBook {
 
   getResyncRequired(): boolean {
     return !this.synchronized;
+  }
+
+  /** While awaiting the post-snapshot bridge diff, returns REST `lastUpdateId`; otherwise `undefined`. */
+  getBridgeAnchorWhenAwaiting(): number | undefined {
+    if (!this.awaitingSnapshotBridge || this.snapshotAnchorId === undefined) return undefined;
+    return this.snapshotAnchorId;
+  }
+
+  /** Drop synchronized state after an unrecoverable sequence error (adapter schedules REST resync). */
+  forceDesyncForGap(): void {
+    this.synchronized = false;
+    this.awaitingSnapshotBridge = false;
+    this.snapshotAnchorId = undefined;
   }
 
   private currentSnapshot(eventTimeMs: number | undefined): BookSnapshot {

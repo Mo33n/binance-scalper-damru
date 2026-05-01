@@ -31,7 +31,7 @@
 
 **What you can use it for today**
 
-- **Spin up locally** with `npm run dev`: validated config, structured startup logging, and a wired composition root—good for checking that your environment and JSON line up before you touch the exchange.
+- **Spin up locally** with `npm run dev`: validated config, structured startup logging, and exchange bootstrap over **public REST** (needs network unless you mock)—good for checking that your environment and JSON line up before you touch private order APIs.
 - **Learn and extend the strategy layer** in `src/domain/` with tests beside you; the linter keeps domain logic from accidentally depending on REST or WebSockets.
 - **Tune risk and rollout** through the Zod-backed config in [config/README.md](config/README.md)—caps, fees, VPIN knobs, and small-live-style bundles—with `verify:rollout` and `verify:secrets` as guardrails in CI or before you push.
 - **Optional testnet smoke**: hit public REST (`smoke:exchange-info`) when you want a quick reality check against Binance’s endpoints.
@@ -120,6 +120,8 @@ CONFIG_PATH=config/examples/testnet.json TRADING_ENV=testnet npm run dev
 
 **Help:** `npm run dev -- --help`
 
+**Stay running (dev):** `npm run dev -- --stay-alive` or `DAMRU_STAY_ALIVE=1` — process keeps going with periodic `runtime.dev_pulse` logs until Ctrl+C (interval from `heartbeatIntervalMs` in config).
+
 **Production-style:**
 
 ```bash
@@ -128,6 +130,8 @@ CONFIG_PATH=config/examples/testnet.json TRADING_ENV=testnet npm start
 ```
 
 The entrypoint validates **config + bootstrap** and wires the stub exchange adapter today.
+
+**Worker threads (SPEC-08):** Set `features.useWorkerThreads` to `true` after `npm run build` so Node loads `dist/runtime/worker/symbol-worker.js`. Workers inherit **`process.env`** for signing (`BINANCE_API_KEY` / `BINANCE_API_SECRET`); bootstrap **postMessage** payloads intentionally omit secrets. Venue fills are mirrored to each worker via `ledger_fill` envelopes from the main-thread user stream. If Vitest worker-thread integration proves flaky, prefer `poolOptions.threads.singleThread` (see `vitest.config.ts`).
 
 ### 4. Tests, lint, hygiene
 
@@ -166,6 +170,16 @@ npm run build && CONFIG_PATH=config/examples/testnet.json npm start -- --help
 - Never commit API keys or `.env` with real secrets.
 - Use separate key material per environment; rotate via deployment env + restart.
 - `credentialProfile` in config must match `environment` when set (see [config/README.md](config/README.md)).
+
+---
+
+## Rollout & safety
+
+- **Operator runbook (how to run + parameters):** [docs/operator/running-the-trader-and-parameters.md](docs/operator/running-the-trader-and-parameters.md)
+- **Testnet vs live:** [docs/rollout/testnet-limitations.md](docs/rollout/testnet-limitations.md)
+- **Feature flags & knobs:** [docs/architecture/feature-flags.md](docs/architecture/feature-flags.md)
+- **Promotion checklist** (includes `npm run verify:rollout`): [docs/rollout/promotion-checklist.md](docs/rollout/promotion-checklist.md)
+- **Emergency stop:** [docs/rollout/emergency-stop.md](docs/rollout/emergency-stop.md)
 
 ---
 

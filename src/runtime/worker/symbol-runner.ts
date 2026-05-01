@@ -1,3 +1,4 @@
+import type { FillEvent } from "../../infrastructure/binance/user-stream.js";
 import type { SupervisorCommand } from "../messaging/types.js";
 
 export interface SymbolRunnerHandle {
@@ -14,4 +15,6 @@ export interface SymbolRunnerPort {
     onMessage(raw: string): void;
     onExit(): void;
   }): SymbolRunnerHandle;
+  /** SPEC-08 — worker threads mirror venue fills into worker-local ledgers. */
+  relayLedgerFill?(fill: FillEvent): void;
 }

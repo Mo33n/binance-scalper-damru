@@ -130,10 +130,12 @@ export function describeConfigPublic(cfg: AppConfig): Record<string, unknown> {
     risk: cfg.risk,
     features: cfg.features,
     rollout: cfg.rollout,
+    quoting: cfg.quoting,
     hasApiKey: Boolean(cfg.credentials.apiKey),
     hasApiSecret: Boolean(cfg.credentials.apiSecret),
     heartbeatIntervalMs: cfg.heartbeatIntervalMs,
     heartbeatMissThreshold: cfg.heartbeatMissThreshold,
+    reconciliationIntervalMs: cfg.reconciliationIntervalMs,
     perSymbolOverridesCount: cfg.perSymbolOverrides.length,
   };
 }

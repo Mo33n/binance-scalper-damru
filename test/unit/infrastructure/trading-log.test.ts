@@ -17,6 +17,7 @@ describe("trading-log", () => {
   it("logTradingEvent forwards redacted metadata", () => {
     const calls: unknown[][] = [];
     const log: LoggerPort = {
+      debug: () => undefined,
       info: (meta, msg) => {
         calls.push([meta, msg]);
       },

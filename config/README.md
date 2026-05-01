@@ -26,6 +26,20 @@ Schema version: **`configSchemaVersion: "1"`** — bump only when you mean it.
 
 ---
 
+## Feature flags (`features.*`)
+
+- **`features.liveQuotingEnabled`** (default **`false`** everywhere): when **`true`**, and API credentials are present, and **`--dry-run`** is not set, the process constructs **`ExecutionService`** for signed order endpoints. When **`false`** (default), startup stays **read-only** at the execution layer even if keys exist — use for observation, CI, or staged rollout. **Owner:** Quant / Ops agree before enabling in any environment that can reach live keys.
+
+---
+
+## Hybrid quoting cadence (`quoting.*`, SPEC-05)
+
+- **`quoting.repriceMinIntervalMs`**: minimum spacing between quoting ticks (`cancelAll` / `placeFromIntent` cycles) per symbol.
+- **`quoting.maxBookStalenessMs`**: skip posting when the book hasn’t advanced beyond this age (plus gap/resync pause from market data).
+- **`quoting.baseOrderQty`** (optional): per-leg base qty; if omitted, orchestrator uses **5% of `risk.maxAbsQty`** (documented default).
+
+---
+
 ## Rollout / economics gate
 
 - **`rollout.markoutPromotionWindowMs`**: rolling window (ms) for “are we actually making sense after fees?” before you size up. Pair with your team’s rollout / promotion process (`npm run verify:rollout` is one guardrail).
@@ -95,8 +109,12 @@ Reviewers: these fields move PnL and survival, not “just config”:
 
 - `risk.sessionLossCapQuote`, `risk.maxOpenNotionalQuote`
 - `risk.maxAbsQty`, `risk.maxAbsNotional`, `risk.globalMaxAbsNotional`, `risk.haltUtilization`
-- `symbols`, `features.*`, `credentialProfile`, `rollout.markoutPromotionWindowMs`, `heartbeat*`
+- `symbols`, `features.*`, `quoting.*`, `credentialProfile`, `rollout.markoutPromotionWindowMs`, `heartbeat*`
 
 **Safe-ish:** one new override with future `effectiveFrom`, caps unchanged.
 
 **Sketchy:** cranking `maxOpenNotionalQuote` and `sessionLossCapQuote` together with no testnet receipts—Binance scalper damru might run, but *you* won’t like the phone call.
+
+---
+
+**Operator narrative (run commands, modes, “what to turn when”):** [docs/operator/running-the-trader-and-parameters.md](../docs/operator/running-the-trader-and-parameters.md).

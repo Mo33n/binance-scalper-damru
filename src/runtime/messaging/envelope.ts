@@ -3,7 +3,11 @@ export type MessageKind =
   | "worker_fatal"
   | "supervisor_cmd"
   | "metric_delta"
-  | "request_shutdown";
+  | "request_shutdown"
+  /** SPEC-08 — venue fill relay to worker-local ledger (structured clone / JSON-safe). */
+  | "ledger_fill"
+  /** SPEC-09 — regime / risk: runner requests `HALT_QUOTING` with structured reason. */
+  | "halt_request";
 
 export interface MessageEnvelope<T = unknown> {
   readonly v: 1;
@@ -34,7 +38,9 @@ export function parseEnvelope(raw: string): MessageEnvelope {
     kind !== "worker_fatal" &&
     kind !== "supervisor_cmd" &&
     kind !== "metric_delta" &&
-    kind !== "request_shutdown"
+    kind !== "request_shutdown" &&
+    kind !== "ledger_fill" &&
+    kind !== "halt_request"
   ) {
     throw new Error("envelope: invalid kind");
   }

@@ -1,3 +1,6 @@
+/**
+ * SPEC-09 §2.2 — Listen-key REST; production passes the rate-limited `BinanceRestClient` from `venue-factory` / workers.
+ */
 import { signedDeleteJson, signedPostJson, type SignedCredentials } from "./signed-rest.js";
 import type { BinanceRestClient } from "./rest-client.js";
 

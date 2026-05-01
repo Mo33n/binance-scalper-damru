@@ -24,8 +24,8 @@ describe("PositionLedger", () => {
       maxTimeAboveEpsilonMs: 10_000,
     });
     const f = fill();
-    ledger.onFill(f, 1000);
-    ledger.onFill(f, 1001);
+    ledger.applyFill(f, 1000);
+    ledger.applyFill(f, 1001);
     expect(ledger.getPosition("BTCUSDT").netQty).toBe(0.1);
   });
 
@@ -37,7 +37,7 @@ describe("PositionLedger", () => {
       inventoryEpsilon: 0.2,
       maxTimeAboveEpsilonMs: 10_000,
     });
-    ledger.onFill(fill({ quantity: 0.3 }), 1000);
+    ledger.applyFill(fill({ quantity: 0.3 }), 1000);
     expect(ledger.getStressLevel("BTCUSDT", 100_000, 1001)).toBe("breach");
   });
 
@@ -49,7 +49,7 @@ describe("PositionLedger", () => {
       inventoryEpsilon: 0.05,
       maxTimeAboveEpsilonMs: 100,
     });
-    ledger.onFill(fill({ quantity: 0.1 }), 1000);
+    ledger.applyFill(fill({ quantity: 0.1 }), 1000);
     expect(ledger.getStressLevel("BTCUSDT", 100_000, 1050)).toBe("none");
     expect(ledger.getStressLevel("BTCUSDT", 100_000, 1200)).toBe("breach");
   });

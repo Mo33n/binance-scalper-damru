@@ -27,6 +27,10 @@ describe("loadConfig", () => {
     expect(cfg.environment).toBe("testnet");
     expect(cfg.symbols).toContain("BTCUSDT");
     expect(cfg.configSchemaVersion).toBe("1");
+    expect(cfg.quoting.repriceMinIntervalMs).toBe(250);
+    expect(cfg.quoting.maxBookStalenessMs).toBe(3000);
+    expect(cfg.reconciliationIntervalMs).toBe(60_000);
+    expect(cfg.features.liveQuotingEnabled).toBe(false);
     expect(cfg.features.markoutFeedbackEnabled).toBe(false);
     expect(cfg.binance.restBaseUrl).toMatch(/^https:\/\//);
   });

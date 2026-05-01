@@ -2,16 +2,31 @@ import { z } from "zod";
 
 export const CONFIG_SCHEMA_VERSION = "1" as const;
 
-const featuresSchema = z.object({
+export const featuresSchema = z.object({
+  /** When false (default), ExecutionService is not constructed even if API keys exist (SPEC-02). */
+  liveQuotingEnabled: z.boolean().default(false),
   markoutFeedbackEnabled: z.boolean().default(false),
   reconciliationIntervalOverrideEnabled: z.boolean().default(false),
   preFundingFlattenEnabled: z.boolean().default(false),
   regimeFlagsEnabled: z.boolean().default(false),
+  /** SPEC-08 — isolate each symbol in `worker_threads` (default off until stable). */
+  useWorkerThreads: z.boolean().default(false),
 });
 
-const rolloutSchema = z.object({
+export const rolloutSchema = z.object({
   /** Rolling window (ms) for economics / markout review before size promotion (RFC §17.5). */
   markoutPromotionWindowMs: z.number().int().positive().default(86_400_000),
+});
+
+/** Hybrid quoting cadence + staleness guards (SPEC-05). */
+export const quotingSchema = z.object({
+  repriceMinIntervalMs: z.number().int().positive().default(250),
+  maxBookStalenessMs: z.number().int().positive().default(3000),
+  /**
+   * Optional override for per-quote leg size (base asset). When omitted, uses 5% of `risk.maxAbsQty`
+   * capped by `maxAbsQty` (documented convention — tune via override on live).
+   */
+  baseOrderQty: z.number().positive().optional(),
 });
 
 const perSymbolEntrySchema = z.object({
@@ -37,6 +52,8 @@ export const appConfigSchema = z
   symbols: z.array(z.string().min(1)),
   risk: z.object({
     sessionLossCapQuote: z.number().positive(),
+    /** Optional separate daily cap; defaults to `sessionLossCapQuote` when omitted (SPEC-09 loss guard). */
+    dailyLossCapQuote: z.number().positive().optional(),
     maxOpenNotionalQuote: z.number().positive(),
     defaultMinSpreadTicks: z.number().int().positive().default(5),
     maxDesiredLeverage: z.number().int().positive().default(50),
@@ -59,12 +76,18 @@ export const appConfigSchema = z
     preFundingFlattenMinutes: z.number().int().nonnegative().default(0),
   }),
   features: featuresSchema.default({
+    liveQuotingEnabled: false,
     markoutFeedbackEnabled: false,
     reconciliationIntervalOverrideEnabled: false,
     preFundingFlattenEnabled: false,
     regimeFlagsEnabled: false,
+    useWorkerThreads: false,
   }),
   rollout: rolloutSchema.default({ markoutPromotionWindowMs: 86_400_000 }),
+  quoting: quotingSchema.default({
+    repriceMinIntervalMs: 250,
+    maxBookStalenessMs: 3000,
+  }),
   credentials: z
     .object({
       apiKey: z.string().optional(),
@@ -73,6 +96,8 @@ export const appConfigSchema = z
     .default({}),
   heartbeatIntervalMs: z.number().positive().default(5000),
   heartbeatMissThreshold: z.number().int().positive().default(3),
+  /** Ledger vs REST position check interval (SPEC-06); open-order parity deferred. */
+  reconciliationIntervalMs: z.number().int().positive().default(60_000),
   perSymbolOverrides: z.array(perSymbolEntrySchema).default([]),
 })
   .superRefine((data, ctx) => {

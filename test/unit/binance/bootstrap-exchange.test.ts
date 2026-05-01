@@ -19,6 +19,9 @@ describe("bootstrapExchangeContext", () => {
     const cfgWithSymbols = { ...cfg, symbols: ["BTCUSDT", "ETHUSDT", "UNKNOWN"] };
     const logs: unknown[] = [];
     const log: LoggerPort = {
+      debug(meta) {
+        logs.push(meta);
+      },
       info(meta) {
         logs.push(meta);
       },

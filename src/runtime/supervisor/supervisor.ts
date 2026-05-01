@@ -1,8 +1,14 @@
 import type { LoggerPort } from "../../application/ports/logger-port.js";
 import type { PortfolioSnapshot, PortfolioSnapshotLine, StatsSink } from "../../application/ports/stats-sink.js";
+import type { LossGuard } from "../../application/services/loss-guard.js";
 import { PnlService } from "../../application/services/pnl-service.js";
 import { parseEnvelope } from "../messaging/envelope.js";
-import type { HeartbeatPayload, MetricDeltaPayload, SupervisorCommand } from "../messaging/types.js";
+import type {
+  HaltRequestPayload,
+  HeartbeatPayload,
+  MetricDeltaPayload,
+  SupervisorCommand,
+} from "../messaging/types.js";
 import type { SymbolRunnerHandle, SymbolRunnerPort } from "../worker/symbol-runner.js";
 
 interface SymbolMetrics {
@@ -27,6 +33,8 @@ export interface SupervisorDeps {
   readonly monotonicNowMs: () => number;
   readonly cancelAllForSymbol: (symbol: string) => Promise<void>;
   readonly log?: LoggerPort;
+  /** SPEC-09 — portfolio PnL after each metric delta; trip → `HALT_QUOTING` `session_loss_cap`. */
+  readonly lossGuard?: LossGuard;
 }
 
 export class Supervisor {
@@ -85,6 +93,11 @@ export class Supervisor {
       }
       if (env.kind === "metric_delta") {
         this.onMetricDelta(env.payload as MetricDeltaPayload);
+        return;
+      }
+      if (env.kind === "halt_request") {
+        const p = env.payload as HaltRequestPayload;
+        this.broadcast({ type: "HALT_QUOTING", reason: p.reason });
         return;
       }
       if (env.kind === "worker_fatal") {
@@ -163,6 +176,34 @@ export class Supervisor {
     m.disconnects += payload.disconnectsDelta ?? 0;
     if (payload.errorMessage !== undefined) {
       this.recordError(payload.symbol, payload.errorMessage);
+    }
+    this.evaluateLossGuardAfterMetrics();
+  }
+
+  private computePortfolioNetPnlQuote(): number {
+    let portfolioNetPnlQuote = 0;
+    for (const item of this.metrics.values()) {
+      portfolioNetPnlQuote += this.pnl.computeNetQuote({
+        realizedQuote: item.netPnlQuote,
+        feesQuote: item.feesQuote,
+        fundingQuote: item.fundingQuote,
+      });
+    }
+    return portfolioNetPnlQuote;
+  }
+
+  private evaluateLossGuardAfterMetrics(): void {
+    const guard = this.deps.lossGuard;
+    if (guard === undefined) return;
+    const net = this.computePortfolioNetPnlQuote();
+    const nowMs = this.deps.monotonicNowMs();
+    const state = guard.evaluate({
+      sessionPnlQuote: net,
+      dailyPnlQuote: net,
+      nowMs,
+    });
+    if (state === "halted") {
+      this.broadcast({ type: "HALT_QUOTING", reason: "session_loss_cap" });
     }
   }
 

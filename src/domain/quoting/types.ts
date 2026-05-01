@@ -8,6 +8,9 @@ export interface Touch {
 
 export type InventoryMode = "normal" | "stress";
 
+/** Neutral posture until SPEC-06 user-stream ledger drives inventory stress. */
+export const DEFAULT_INVENTORY_MODE: InventoryMode = "normal";
+
 export type QuotingRegime = "normal" | "toxic" | "inventory_stress";
 
 export interface QuotingInputs {

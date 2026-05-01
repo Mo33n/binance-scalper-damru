@@ -1,4 +1,10 @@
 #!/usr/bin/env node
+/**
+ * Loads the small-live template under live `TRADING_ENV` and asserts promotion guardrails
+ * (`maxOpenNotionalQuote`, rollout window, credential profile).
+ *
+ * See docs/rollout/promotion-checklist.md.
+ */
 import { resolve } from "node:path";
 import { loadConfig } from "../src/config/load.js";
 

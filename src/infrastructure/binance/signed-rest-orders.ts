@@ -1,3 +1,6 @@
+/**
+ * SPEC-09 §2.2 — Signed order REST; production passes the rate-limited `BinanceRestClient` from `venue-factory` / workers.
+ */
 import type { SymbolSpec } from "./types.js";
 import { signedDeleteJson, signedPostJson, type SignedCredentials } from "./signed-rest.js";
 import { BinanceRestClient, BinanceRestError } from "./rest-client.js";
@@ -25,7 +28,14 @@ export type OrderErrorAction = "Retryable" | "Fatal" | "ReconcileRequired";
 
 export interface OrderErrorMapping {
   readonly action: OrderErrorAction;
+  /** Binance Futures `code` from JSON body when present. */
   readonly code?: number;
+  readonly httpStatus?: number;
+  readonly binanceMsg?: string;
+  /** Truncated raw body for grep-friendly logs (no secrets expected in order errors). */
+  readonly bodySnippet?: string;
+  /** Non-Binance errors (e.g. normalization `throw`). */
+  readonly detail?: string;
 }
 
 export function normalizeOrderRequest(r: NewOrderRequest, spec: SymbolSpec): NewOrderRequest {
@@ -46,14 +56,27 @@ export function normalizeOrderRequest(r: NewOrderRequest, spec: SymbolSpec): New
 
 export function mapBinanceOrderError(err: unknown): OrderErrorMapping {
   if (err instanceof BinanceRestError) {
-    if (err.status === 429 || err.status === 503) return { action: "Retryable" };
+    const binanceMsg = extractBinanceMsg(err.bodyText);
+    const bodySnippet = snippetBody(err.bodyText);
+    const msgFields = {
+      ...(binanceMsg !== undefined ? { binanceMsg } : {}),
+      ...(bodySnippet !== undefined ? { bodySnippet } : {}),
+    };
+    const httpStatus = err.status;
+    if (err.status === 429 || err.status === 503) {
+      return { action: "Retryable", httpStatus, ...msgFields };
+    }
     const code = extractCode(err.bodyText);
-    if (code === -2011) return { action: "ReconcileRequired", code }; // unknown order
-    if (code === -2019 || code === -2022) return { action: "Fatal", code }; // margin/reduceOnly issues
-    if (code !== undefined) return { action: "ReconcileRequired", code };
-    return { action: "ReconcileRequired" };
+    const common = { httpStatus, ...msgFields, ...(code !== undefined ? { code } : {}) };
+    if (code === -2011) return { action: "ReconcileRequired", ...common }; // unknown order
+    if (code === -2019 || code === -2022) return { action: "Fatal", ...common }; // margin/reduceOnly issues
+    if (code !== undefined) return { action: "ReconcileRequired", ...common };
+    return { action: "ReconcileRequired", httpStatus, ...msgFields };
   }
-  return { action: "ReconcileRequired" };
+  if (err instanceof Error) {
+    return { action: "ReconcileRequired", detail: err.message };
+  }
+  return { action: "ReconcileRequired", detail: String(err) };
 }
 
 export async function placeOrder(
@@ -130,6 +153,21 @@ function extractCode(body: string): number | undefined {
   } catch {
     return undefined;
   }
+}
+
+function extractBinanceMsg(body: string): string | undefined {
+  try {
+    const parsed = JSON.parse(body) as { msg?: string };
+    return typeof parsed.msg === "string" ? parsed.msg : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function snippetBody(body: string): string | undefined {
+  const t = body.trim();
+  if (t.length === 0) return undefined;
+  return t.length > 320 ? `${t.slice(0, 320)}…` : t;
 }
 
 function stepDecimals(step: number): number {

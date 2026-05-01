@@ -35,18 +35,12 @@ export class SignalEngine {
 
   onTapeEvent(trade: TapeTrade): void {
     const now = this.clock.monotonicNowMs();
-    const closed = this.vpin.onTrade(trade, now);
+    this.vpin.onTrade(trade, now);
     const flushed = this.vpin.flushIfStale(now);
     if (flushed !== undefined) {
       this.log?.warn(
         { event: "signals.stale_bucket_flush", symbol: trade.symbol, index: flushed.index },
         "signals.stale_bucket_flush",
-      );
-    }
-    if (closed !== undefined) {
-      this.log?.info(
-        { event: "signals.bucket_closed", symbol: trade.symbol, index: closed.index, imbalance: closed.imbalance },
-        "signals.bucket_closed",
       );
     }
   }

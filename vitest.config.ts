@@ -5,5 +5,7 @@ export default defineConfig({
     globals: false,
     environment: "node",
     include: ["test/**/*.test.ts", "src/**/*.test.ts"],
+    // SPEC-08: if native `worker_threads` integration tests are added and flake, try:
+    // poolOptions: { threads: { singleThread: true } },
   },
 });

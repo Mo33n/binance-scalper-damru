@@ -5,11 +5,19 @@
   "symbols": ["BTCUSDT"],
   "risk": "invalid",
   "features": {
+    "liveQuotingEnabled": false,
     "markoutFeedbackEnabled": false,
     "reconciliationIntervalOverrideEnabled": false,
-    "preFundingFlattenEnabled": false
+    "preFundingFlattenEnabled": false,
+    "regimeFlagsEnabled": false,
+    "useWorkerThreads": false
+  },
+  "quoting": {
+    "repriceMinIntervalMs": 250,
+    "maxBookStalenessMs": 3000
   },
   "heartbeatIntervalMs": 5000,
   "heartbeatMissThreshold": 3,
+  "reconciliationIntervalMs": 60000,
   "perSymbolOverrides": []
 }

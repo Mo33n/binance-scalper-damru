@@ -41,9 +41,13 @@ npm run typecheck && npm run lint && npm test
 
 3. **`TRADING_ENV` / `APP_ENV`** seeds defaults, then the file merges on top. If the file says `"environment": "live"` but your URLs are still testnet hosts from an earlier merge, **host allowlisting** in `src/infrastructure/binance/constants.ts` will throw — that’s intentional.
 
-4. **Secrets:** `BINANCE_API_KEY` / `BINANCE_API_SECRET` are optional for the current stub bootstrap; never commit them. Run `npm run verify:secrets` before you push.
+4. **Secrets:** `BINANCE_API_KEY` / `BINANCE_API_SECRET` are optional for **read-only** mode after bootstrap; live quoting still requires `features.liveQuotingEnabled` and no `--dry-run`. Never commit keys. Run `npm run verify:secrets` before you push.
+
+5. **`DAMRU_DISABLE_MARKET_DATA=1`** — skips per-symbol Binance WebSocket market data in `MainThreadSymbolRunner` (used by unit tests that mock REST bootstrap only). Omit in real runs so depth + aggTrade drive `SignalEngine`.
 
 Deep merge rules and risk knobs: [config/README.md](config/README.md).
+
+**Trading / ops angle (commands + parameters):** [docs/operator/running-the-trader-and-parameters.md](docs/operator/running-the-trader-and-parameters.md).
 
 ---
 
@@ -61,6 +65,8 @@ TRADING_ENV=testnet CONFIG_PATH=config/examples/testnet.json npm run dev
 npm run dev -- --help
 ```
 
+**Keep the process running (dev):** by default the entrypoint exits after bootstrap. Use `npm run dev -- --stay-alive` or `DAMRU_STAY_ALIVE=1` so the process stays up and emits a pulse on `heartbeatIntervalMs` until you press Ctrl+C.
+
 **Compiled run (matches CI / deploy shape):**
 
 ```bash
@@ -68,7 +74,7 @@ npm run build
 TRADING_ENV=testnet CONFIG_PATH=config/examples/testnet.json npm start
 ```
 
-**What you should see:** startup logs via pino (`config.loaded`, `config.features`, `config.rollout`, `bootstrap.ready`). The exchange adapter is still a **stub** in composition — you’re validating wiring and config, not full market-making yet.
+**What you should see:** startup logs via pino (`config.loaded`, `config.features`, exchange bootstrap, `bootstrap.ready`, `trading.mode.selected`). Startup calls **public REST** (`exchangeInfo`, fee/leverage paths) — allow outbound network or use tests/mocks. Full market-making loop is still phased in; this validates bootstrap, config, and trading mode.
 
 ---
 
@@ -106,6 +112,8 @@ TESTNET_SMOKE=1 CONFIG_PATH=config/examples/testnet.json npm run smoke:exchange-
 npm run verify:secrets   # src/ + config/ scan for sketchy literals
 npm run verify:rollout   # small-live-style config guard (sets env internally)
 ```
+
+**Rollout & safety (SPEC-10):** before live API keys, read [docs/rollout/promotion-checklist.md](docs/rollout/promotion-checklist.md) and [docs/rollout/emergency-stop.md](docs/rollout/emergency-stop.md). The feature flag table in [docs/architecture/feature-flags.md](docs/architecture/feature-flags.md) is guarded by `test/unit/docs/feature-flags-doc.test.ts` (must stay aligned with `src/config/schema.ts`).
 
 ---
 

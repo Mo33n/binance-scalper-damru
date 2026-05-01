@@ -6,6 +6,8 @@ export interface WsConnection {
   onMessage(cb: (text: string) => void): void;
   onClose(cb: (code: number) => void): void;
   onError(cb: (err: Error) => void): void;
+  /** Resolves when the socket is open; if already open, resolves on the next microtask. */
+  whenOpen(): Promise<void>;
 }
 
 export interface WsClient {
@@ -21,6 +23,31 @@ export function createWsClient(baseWsUrl: string, log?: LoggerPort): WsClient {
         log?.info({ event: "ws.open", path }, "ws.open");
       });
       const conn: WsConnection = {
+        whenOpen() {
+          return new Promise<void>((resolve, reject) => {
+            if (ws.readyState === WebSocket.OPEN) {
+              queueMicrotask(() => resolve());
+              return;
+            }
+            if (
+              ws.readyState === WebSocket.CLOSING ||
+              ws.readyState === WebSocket.CLOSED
+            ) {
+              reject(new Error("WebSocket closed before open"));
+              return;
+            }
+            const onOpen = (): void => {
+              ws.off("error", onErr);
+              resolve();
+            };
+            const onErr = (err: unknown): void => {
+              ws.off("open", onOpen);
+              reject(err instanceof Error ? err : new Error(String(err)));
+            };
+            ws.once("open", onOpen);
+            ws.once("error", onErr);
+          });
+        },
         close() {
           ws.close();
         },
