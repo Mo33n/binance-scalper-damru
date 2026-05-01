@@ -1,4 +1,5 @@
 import type { AppConfig } from "../../config/schema.js";
+import type { DeRiskExitPlan } from "../../domain/quoting/execution-directive.js";
 import type { QuoteIntent } from "../../domain/quoting/types.js";
 import type { SymbolSpec } from "../../infrastructure/binance/types.js";
 import type { PositionLedger } from "./position-ledger.js";
@@ -41,5 +42,38 @@ export function canPlaceQuoteIntent(args: {
   }
 
   /** Cross-symbol `globalMaxAbsNotional` — SPEC-06 defers full aggregator; ledger stress still gates via inventory. */
+  return { ok: true };
+}
+
+/**
+ * Gates reduce-only de-risk: side vs position and clip vs |net|.
+ * Does **not** apply `maxAbsQty` / `maxAbsNotional` entry caps — those limit **building** exposure;
+ * exits reduce risk even when the position already breaches limits (RFC inventory de-risk).
+ */
+export function canPlaceDeRiskExit(args: {
+  readonly exit: DeRiskExitPlan;
+  readonly netQty: number;
+}): { ok: true } | { ok: false; reason: string } {
+  const { exit, netQty } = args;
+  const q = exit.quantity;
+  if (netQty > 0) {
+    if (exit.side !== "SELL") {
+      return { ok: false, reason: "de_risk_side_mismatch_long" };
+    }
+    const next = netQty - q;
+    if (next < -1e-12) {
+      return { ok: false, reason: "de_risk_sell_exceeds_net" };
+    }
+  } else if (netQty < 0) {
+    if (exit.side !== "BUY") {
+      return { ok: false, reason: "de_risk_side_mismatch_short" };
+    }
+    const next = netQty + q;
+    if (next > 1e-12) {
+      return { ok: false, reason: "de_risk_buy_exceeds_net" };
+    }
+  } else {
+    return { ok: false, reason: "de_risk_flat" };
+  }
   return { ok: true };
 }

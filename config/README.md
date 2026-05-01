@@ -29,6 +29,7 @@ Schema version: **`configSchemaVersion: "1"`** — bump only when you mean it.
 ## Feature flags (`features.*`)
 
 - **`features.liveQuotingEnabled`** (default **`false`** everywhere): when **`true`**, and API credentials are present, and **`--dry-run`** is not set, the process constructs **`ExecutionService`** for signed order endpoints. When **`false`** (default), startup stays **read-only** at the execution layer even if keys exist — use for observation, CI, or staged rollout. **Owner:** Quant / Ops agree before enabling in any environment that can reach live keys.
+- **`features.inventoryDeRiskEnabled`** (default **`false`**): when **`true`**, ledger **stress** maps to **reduce-only** exit orders instead of cancel-only. Pair with **`risk.deRiskMode`**: `passive_touch` (post-only limit at touch), `ioc_touch` (limit IOC), or `off` (suppress automated exits; logs **`quoting.de_risk_suppressed`**). Soak on testnet before live.
 
 ---
 

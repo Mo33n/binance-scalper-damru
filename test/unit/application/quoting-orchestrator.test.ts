@@ -8,11 +8,15 @@ import { PositionLedger } from "../../../src/application/services/position-ledge
 import { QuotingOrchestrator } from "../../../src/application/services/quoting-orchestrator.js";
 import type { EffectiveFees, SymbolSpec } from "../../../src/infrastructure/binance/types.js";
 
-function buildLogger(debugFn: LoggerPort["debug"], infoFn: LoggerPort["info"]): LoggerPort {
+function buildLogger(
+  debugFn: LoggerPort["debug"],
+  infoFn: LoggerPort["info"],
+  warnFn: LoggerPort["warn"],
+): LoggerPort {
   const log: LoggerPort = {
     debug: debugFn,
     info: infoFn,
-    warn: vi.fn(),
+    warn: warnFn,
     error: vi.fn(),
     child(): LoggerPort {
       return log;
@@ -60,6 +64,7 @@ const testRisk: AppConfig["risk"] = {
   criticalUtilization: 0.85,
   haltUtilization: 0.95,
   preFundingFlattenMinutes: 0,
+  deRiskMode: "passive_touch",
 };
 
 const testFeaturesLive: AppConfig["features"] = {
@@ -68,6 +73,7 @@ const testFeaturesLive: AppConfig["features"] = {
   reconciliationIntervalOverrideEnabled: false,
   preFundingFlattenEnabled: false,
   regimeFlagsEnabled: false,
+  inventoryDeRiskEnabled: false,
   useWorkerThreads: false,
 };
 
@@ -101,6 +107,7 @@ describe("QuotingOrchestrator (SPEC-05)", () => {
   let log: LoggerPort;
   let debugMock: ReturnType<typeof vi.fn>;
   let infoMock: ReturnType<typeof vi.fn>;
+  let warnMock: ReturnType<typeof vi.fn>;
   let getSnapshot: () => QuotingSnapshot;
   let positionLedger: PositionLedger;
 
@@ -108,9 +115,11 @@ describe("QuotingOrchestrator (SPEC-05)", () => {
     positionLedger = makeTestLedger();
     debugMock = vi.fn();
     infoMock = vi.fn();
+    warnMock = vi.fn();
     log = buildLogger(
       debugMock as unknown as LoggerPort["debug"],
       infoMock as unknown as LoggerPort["info"],
+      warnMock as unknown as LoggerPort["warn"],
     );
     getSnapshot = () => ({
       readModel: {
@@ -323,5 +332,133 @@ describe("QuotingOrchestrator (SPEC-05)", () => {
     expect(typeof (restored?.[0] as { unavailableDurationMs?: number }).unavailableDurationMs).toBe(
       "number",
     );
+  });
+
+  it("inventory de-risk: stressed long places reduce-only exit when feature enabled", async () => {
+    const cancelAll = vi.fn(async () => {});
+    const placeFromIntent = vi.fn(async () => {});
+    const executeDeRisk = vi.fn(async () => {});
+    const execution = { cancelAll, placeFromIntent, executeDeRisk } as unknown as ExecutionService;
+    const ledger = new PositionLedger({
+      maxAbsQty: 1,
+      maxAbsNotional: 1_000_000,
+      globalMaxAbsNotional: 1_000_000,
+      inventoryEpsilon: testRisk.inventoryEpsilon,
+      maxTimeAboveEpsilonMs: testRisk.maxTimeAboveEpsilonMs,
+    });
+    ledger.applyFill(
+      {
+        symbol: spec.symbol,
+        orderId: 1,
+        tradeId: 1,
+        side: "BUY",
+        quantity: 1.05,
+        price: 50_000,
+      },
+      10_000,
+    );
+    const orch = makeOrchestrator({
+      execution,
+      positionLedger: ledger,
+      cfg: {
+        risk: { ...testRisk, maxAbsQty: 1, maxAbsNotional: 1_000_000, globalMaxAbsNotional: 1_000_000 },
+        quoting: { repriceMinIntervalMs: 250, maxBookStalenessMs: 3000 },
+        features: { ...testFeaturesLive, inventoryDeRiskEnabled: true },
+      },
+    });
+    await orch.tick();
+    expect(executeDeRisk).toHaveBeenCalledTimes(1);
+    const deRiskCalls = executeDeRisk.mock.calls as unknown as Array<
+      [unknown, { side: string; reduceOnly: boolean; mode: string }]
+    >;
+    expect(deRiskCalls[0]?.[1]).toMatchObject({
+      side: "SELL",
+      reduceOnly: true,
+      mode: "passive_touch",
+    });
+    expect(placeFromIntent).not.toHaveBeenCalled();
+    expect(cancelAll).toHaveBeenCalledTimes(1);
+  });
+
+  it("de_risk_mode off: suppressed warn and no cancel when feature enabled", async () => {
+    const cancelAll = vi.fn(async () => {});
+    const placeFromIntent = vi.fn(async () => {});
+    const executeDeRisk = vi.fn(async () => {});
+    const execution = { cancelAll, placeFromIntent, executeDeRisk } as unknown as ExecutionService;
+    const ledger = new PositionLedger({
+      maxAbsQty: 1,
+      maxAbsNotional: 1_000_000,
+      globalMaxAbsNotional: 1_000_000,
+      inventoryEpsilon: testRisk.inventoryEpsilon,
+      maxTimeAboveEpsilonMs: testRisk.maxTimeAboveEpsilonMs,
+    });
+    ledger.applyFill(
+      {
+        symbol: spec.symbol,
+        orderId: 1,
+        tradeId: 1,
+        side: "BUY",
+        quantity: 1.05,
+        price: 50_000,
+      },
+      10_000,
+    );
+    const orch = makeOrchestrator({
+      execution,
+      positionLedger: ledger,
+      cfg: {
+        risk: { ...testRisk, maxAbsQty: 1, deRiskMode: "off" },
+        quoting: { repriceMinIntervalMs: 250, maxBookStalenessMs: 3000 },
+        features: { ...testFeaturesLive, inventoryDeRiskEnabled: true },
+      },
+    });
+    await orch.tick();
+    expect(cancelAll).not.toHaveBeenCalled();
+    expect(executeDeRisk).not.toHaveBeenCalled();
+    const w = warnMock.mock.calls.find(
+      (c) => (c[0] as { event?: string }).event === "quoting.de_risk_suppressed",
+    );
+    expect(w?.[0]).toMatchObject({ event: "quoting.de_risk_suppressed" });
+  });
+
+  it("legacy: inventory stress with de-risk disabled logs empty intent and cancelAll", async () => {
+    const cancelAll = vi.fn(async () => {});
+    const placeFromIntent = vi.fn(async () => {});
+    const executeDeRisk = vi.fn(async () => {});
+    const execution = { cancelAll, placeFromIntent, executeDeRisk } as unknown as ExecutionService;
+    const ledger = new PositionLedger({
+      maxAbsQty: 1,
+      maxAbsNotional: 1_000_000,
+      globalMaxAbsNotional: 1_000_000,
+      inventoryEpsilon: testRisk.inventoryEpsilon,
+      maxTimeAboveEpsilonMs: testRisk.maxTimeAboveEpsilonMs,
+    });
+    ledger.applyFill(
+      {
+        symbol: spec.symbol,
+        orderId: 1,
+        tradeId: 1,
+        side: "BUY",
+        quantity: 1.05,
+        price: 50_000,
+      },
+      10_000,
+    );
+    const orch = makeOrchestrator({
+      execution,
+      positionLedger: ledger,
+      cfg: {
+        risk: { ...testRisk, maxAbsQty: 1 },
+        quoting: { repriceMinIntervalMs: 250, maxBookStalenessMs: 3000 },
+        features: { ...testFeaturesLive, inventoryDeRiskEnabled: false },
+      },
+    });
+    await orch.tick();
+    expect(executeDeRisk).not.toHaveBeenCalled();
+    expect(cancelAll).toHaveBeenCalledTimes(1);
+    const w = warnMock.mock.calls.find(
+      (c) => (c[0] as { event?: string }).event === "quoting.de_risk_intent_empty",
+    );
+    expect(w?.[0]).toMatchObject({ event: "quoting.de_risk_intent_empty", regime: "inventory_stress" });
   });
 });

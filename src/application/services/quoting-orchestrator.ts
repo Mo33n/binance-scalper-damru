@@ -2,7 +2,7 @@ import type { AppConfig } from "../../config/schema.js";
 import type { EffectiveFees, SymbolSpec } from "../../infrastructure/binance/types.js";
 import { mapBinanceOrderError } from "../../infrastructure/binance/signed-rest-orders.js";
 import type { BootstrapSymbolDecision } from "./bootstrap-exchange.js";
-import { buildHybridQuoteIntent } from "../../domain/quoting/hybrid-quoting.js";
+import { resolveExecutionDirective, type DeRiskExitPlan } from "../../domain/quoting/execution-directive.js";
 import type { QuotingInputs, QuoteIntent } from "../../domain/quoting/types.js";
 import type { QuotingSnapshot } from "../ports/quoting.js";
 import type { InventoryReader } from "../ports/inventory-reader.js";
@@ -11,7 +11,7 @@ import type { ExecutionService } from "./execution-service.js";
 import type { MarkoutPolicy } from "./markout-policy.js";
 import type { MarkoutTracker } from "./markout-tracker.js";
 import type { PositionLedger } from "./position-ledger.js";
-import { canPlaceQuoteIntent } from "./pre-trade-risk.js";
+import { canPlaceDeRiskExit, canPlaceQuoteIntent } from "./pre-trade-risk.js";
 
 export function resolveAcceptedMinSpreadTicks(
   symbol: string,
@@ -53,6 +53,16 @@ function stableIntentFingerprint(intent: QuoteIntent): string {
   });
 }
 
+function stableDeRiskFingerprint(exit: DeRiskExitPlan): string {
+  return JSON.stringify({
+    side: exit.side,
+    quantity: exit.quantity,
+    limitPrice: exit.limitPrice,
+    mode: exit.mode,
+    postOnly: exit.postOnly,
+  });
+}
+
 export interface QuotingOrchestratorDeps {
   readonly log: LoggerPort;
   readonly execution: ExecutionService | undefined;
@@ -76,7 +86,9 @@ export interface QuotingOrchestratorDeps {
 export class QuotingOrchestrator {
   private readonly deps: QuotingOrchestratorDeps;
   private lastIntentFingerprint: string | undefined;
+  private lastDeRiskFingerprint: string | undefined;
   private readonly lastSkipLogMsByReason = new Map<string, number>();
+  private readonly lastWarnLogMsByEvent = new Map<string, number>();
   private staleBookUnavailableSinceMs: number | undefined;
   private lastStaleBookAttentionLogMs = 0;
 
@@ -96,6 +108,15 @@ export class QuotingOrchestrator {
   private emitSkip(reason: string, now: number, extra?: Record<string, unknown>): void {
     if (!this.rateLimitedSkipLog(reason, now)) return;
     this.deps.log.debug({ event: "quoting.skip", reason, ...extra }, "quoting.skip");
+  }
+
+  /** Rate-limited warn (RFC §7) — uses same cadence as reprice to avoid log storms. */
+  private emitWarnEvent(event: string, now: number, fields: Record<string, unknown>): void {
+    const interval = this.deps.cfg.quoting.repriceMinIntervalMs;
+    const last = this.lastWarnLogMsByEvent.get(event) ?? 0;
+    if (now - last < interval) return;
+    this.lastWarnLogMsByEvent.set(event, now);
+    this.deps.log.warn({ event, symbol: this.deps.spec.symbol, ...fields }, event);
   }
 
   private logStaleBookAttention(
@@ -203,6 +224,7 @@ export class QuotingOrchestrator {
     const markoutExtraTicks =
       mf !== undefined && cfg.features.markoutFeedbackEnabled ? mf.policy.widenSpreadTicks() : 0;
     const reader = this.deps.createInventoryReader(markPx, now);
+    const inventoryMode = reader.getInventoryStressMode();
     const inputs: QuotingInputs = {
       touch: { bestBid: bb, bestAsk: ba },
       toxicityScore: snapshot.toxicity.toxicityScore,
@@ -210,11 +232,70 @@ export class QuotingOrchestrator {
       rvRegime: snapshot.rvRegime,
       minSpreadTicks: this.deps.effectiveMinSpreadTicks + markoutExtraTicks,
       tickSize: this.deps.spec.tickSize,
-      inventoryMode: reader.getInventoryStressMode(),
+      inventoryMode,
       baseOrderQty: resolveBaseOrderQty(cfg),
     };
 
-    const intent = buildHybridQuoteIntent(inputs);
+    const symbolNetQty = this.deps.positionLedger.getPosition(this.deps.spec.symbol).netQty;
+    const directive = resolveExecutionDirective({
+      inventoryMode,
+      features: { inventoryDeRiskEnabled: cfg.features.inventoryDeRiskEnabled },
+      risk: { deRiskMode: cfg.risk.deRiskMode },
+      hybridInputs: inputs,
+      symbolNetQty,
+      spec: this.deps.spec,
+      touch: { bestBid: bb, bestAsk: ba },
+    });
+
+    if (directive.kind === "stress_suppressed") {
+      this.emitWarnEvent("quoting.de_risk_suppressed", now, { reason: directive.reason });
+      return;
+    }
+
+    if (directive.kind === "de_risk_unfillable") {
+      this.emitWarnEvent("quoting.de_risk_unfillable_dust", now, { detail: directive.reason });
+      return;
+    }
+
+    if (directive.kind === "de_risk") {
+      this.lastIntentFingerprint = undefined;
+      const exit = directive.exit;
+      const drGate = canPlaceDeRiskExit({
+        exit,
+        netQty: symbolNetQty,
+      });
+      if (!drGate.ok) {
+        this.emitSkip("pre_trade_risk", now, { detail: drGate.reason });
+        return;
+      }
+
+      const fp = stableDeRiskFingerprint(exit);
+      if (fp === this.lastDeRiskFingerprint) {
+        return;
+      }
+
+      this.lastDeRiskFingerprint = fp;
+      try {
+        await execution.cancelAll(this.deps.spec.symbol);
+        await execution.executeDeRisk(this.deps.spec, exit);
+        this.deps.log.info(
+          {
+            event: "quoting.de_risk_placed",
+            symbol: this.deps.spec.symbol,
+            mode: exit.mode,
+            quantity: exit.quantity,
+            side: exit.side,
+          },
+          "quoting.de_risk_placed",
+        );
+      } catch (err) {
+        this.lastDeRiskFingerprint = undefined;
+        this.logOrderError(err);
+      }
+      return;
+    }
+
+    const intent = directive.intent;
 
     const gate = canPlaceQuoteIntent({
       intent,
@@ -228,7 +309,15 @@ export class QuotingOrchestrator {
     }
 
     try {
+      this.lastDeRiskFingerprint = undefined;
+
       if (!intentHasWorkingLegs(intent)) {
+        if (intent.regime === "inventory_stress" && !cfg.features.inventoryDeRiskEnabled) {
+          this.emitWarnEvent("quoting.de_risk_intent_empty", now, {
+            regime: intent.regime,
+            netQty: symbolNetQty,
+          });
+        }
         await execution.cancelAll(this.deps.spec.symbol);
         this.lastIntentFingerprint = undefined;
         return;
@@ -243,20 +332,24 @@ export class QuotingOrchestrator {
       await execution.cancelAll(this.deps.spec.symbol);
       await execution.placeFromIntent(this.deps.spec, intent);
     } catch (err) {
-      const mapping = mapBinanceOrderError(err);
-      this.deps.log.warn(
-        {
-          event: "quoting.order_error",
-          symbol: this.deps.spec.symbol,
-          action: mapping.action,
-          ...(mapping.code !== undefined ? { code: mapping.code } : {}),
-          ...(mapping.httpStatus !== undefined ? { httpStatus: mapping.httpStatus } : {}),
-          ...(mapping.binanceMsg !== undefined ? { binanceMsg: mapping.binanceMsg } : {}),
-          ...(mapping.bodySnippet !== undefined ? { bodySnippet: mapping.bodySnippet } : {}),
-          ...(mapping.detail !== undefined ? { detail: mapping.detail } : {}),
-        },
-        "quoting.order_error",
-      );
+      this.logOrderError(err);
     }
+  }
+
+  private logOrderError(err: unknown): void {
+    const mapping = mapBinanceOrderError(err);
+    this.deps.log.warn(
+      {
+        event: "quoting.order_error",
+        symbol: this.deps.spec.symbol,
+        action: mapping.action,
+        ...(mapping.code !== undefined ? { code: mapping.code } : {}),
+        ...(mapping.httpStatus !== undefined ? { httpStatus: mapping.httpStatus } : {}),
+        ...(mapping.binanceMsg !== undefined ? { binanceMsg: mapping.binanceMsg } : {}),
+        ...(mapping.bodySnippet !== undefined ? { bodySnippet: mapping.bodySnippet } : {}),
+        ...(mapping.detail !== undefined ? { detail: mapping.detail } : {}),
+      },
+      "quoting.order_error",
+    );
   }
 }

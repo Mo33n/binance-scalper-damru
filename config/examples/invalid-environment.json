@@ -13,6 +13,7 @@
     "reconciliationIntervalOverrideEnabled": false,
     "preFundingFlattenEnabled": false,
     "regimeFlagsEnabled": false,
+    "inventoryDeRiskEnabled": false,
     "useWorkerThreads": false
   },
   "quoting": {

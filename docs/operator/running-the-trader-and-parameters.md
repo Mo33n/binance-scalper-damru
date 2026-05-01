@@ -211,6 +211,8 @@ Priority order for most desks:
 | **`dailyLossCapQuote`** | Optional separate cap; **defaults to session cap** if omitted in wiring. |
 | **`maxOpenNotionalQuote`** | Bootstrap / risk **budget** knob — keep aligned with leverage brackets and personal risk tolerance. |
 
+**Inventory stress (today):** When the ledger flags **stress** (limits or time-above-epsilon), hybrid policy enters **`inventory_stress`** and the orchestrator may **cancel open orders on that symbol** without placing replacement exits until a dedicated **de-risk execution** path lands. Planned guard behavior (e.g. **stale book** vs exit attempts) is in the RFC guard matrix. Design and backlog: [RFC — Inventory de-risk orchestration](../rfc/rfc-inventory-de-risk-orchestration.md) (§3.2 configuration semantics, §4.5 stale book) and [task list](../rfc/inventory-de-risk-tasks.md).
+
 ### 6.7 Margin utilization bands (`risk.*`)
 
 | Parameter | Meaning |

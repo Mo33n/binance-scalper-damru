@@ -1,6 +1,15 @@
 /** Pure quoting types — no I/O (hexagonal domain). */
 export type QuoteSide = "buy" | "sell";
 
+/** Venue-agnostic sizing filters (maps from `SymbolSpec` at the application edge). */
+export interface SymbolExecutionConstraints {
+  readonly symbol: string;
+  readonly tickSize: number;
+  readonly stepSize: number;
+  readonly minNotional: number;
+  readonly contractSize: number;
+}
+
 export interface Touch {
   readonly bestBid: number;
   readonly bestAsk: number;

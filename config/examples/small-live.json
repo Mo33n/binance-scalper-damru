@@ -31,7 +31,8 @@
     "warnUtilization": 0.65,
     "criticalUtilization": 0.8,
     "haltUtilization": 0.9,
-    "preFundingFlattenMinutes": 0
+    "preFundingFlattenMinutes": 0,
+    "deRiskMode": "passive_touch"
   },
   "features": {
     "liveQuotingEnabled": false,
@@ -39,6 +40,7 @@
     "reconciliationIntervalOverrideEnabled": false,
     "preFundingFlattenEnabled": false,
     "regimeFlagsEnabled": false,
+    "inventoryDeRiskEnabled": false,
     "useWorkerThreads": false
   },
   "rollout": {

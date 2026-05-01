@@ -54,18 +54,24 @@ export class BinanceRestClient {
       if (req.body !== undefined) init.body = req.body;
       const res = await this.fetchImpl(url, init);
       const elapsedMs = Math.round(monotonicNowMs() - start);
-      this.log?.info(
-        {
-          event: "binance.rest",
-          method,
-          path: req.path,
-          status: res.status,
-          elapsedMs,
-        },
-        "binance.rest",
-      );
       const text = await res.text();
-      if (!res.ok) {
+      const meta = {
+        event: "binance.rest" as const,
+        method,
+        path: req.path,
+        status: res.status,
+        elapsedMs,
+      };
+      if (res.ok) {
+        this.log?.debug(meta, "binance.rest");
+      } else {
+        this.log?.error(
+          {
+            ...meta,
+            bodyText: text.length > 500 ? `${text.slice(0, 500)}…` : text,
+          },
+          "binance.rest",
+        );
         throw new BinanceRestError(
           `Binance REST ${String(res.status)} on ${req.path}`,
           res.status,

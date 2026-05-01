@@ -81,6 +81,98 @@ describe("Binance market data adapters", () => {
     await adapter.stopSymbol("BTCUSDT");
   });
 
+  it("schedules another REST snapshot when flush fails inside an in-flight resync (coalesced gap)", async () => {
+    const ws = new FakeWs();
+    const snaps = [
+      { lastUpdateId: 100, bids: [["50000", "1"]], asks: [["50000.1", "1"]] },
+      { lastUpdateId: 300, bids: [["50000", "1"]], asks: [["50000.1", "1"]] },
+      { lastUpdateId: 500, bids: [["50000", "1"]], asks: [["50000.1", "1"]] },
+    ];
+    let restCall = 0;
+    const rest = {
+      requestJson: vi.fn(() => {
+        const body = snaps[restCall];
+        restCall += 1;
+        if (body === undefined) throw new Error(`unexpected REST call index ${restCall}`);
+        return Promise.resolve(body);
+      }),
+    };
+    const adapter = new BinanceBookFeedAdapter(rest as never, ws, specs);
+    await adapter.startSymbol("BTCUSDT");
+    const conn = ws.conns[0]!;
+    conn.emitMessage({
+      U: 95,
+      u: 105,
+      pu: 94,
+      b: [["50000", "2"]],
+      a: [["50000.1", "1"]],
+    });
+    conn.emitMessage({
+      U: 106,
+      u: 106,
+      pu: 105,
+      b: [["50000", "3"]],
+      a: [["50000.1", "1"]],
+    });
+    conn.emitMessage({
+      U: 107,
+      u: 107,
+      pu: 50,
+      b: [["50000", "4"]],
+      a: [["50000.1", "1"]],
+    });
+    conn.emitMessage({
+      U: 305,
+      u: 305,
+      pu: 304,
+      b: [["50000", "5"]],
+      a: [["50000.1", "1"]],
+    });
+    await Promise.resolve();
+    await vi.waitUntil(() => rest.requestJson.mock.calls.length >= 3);
+    expect(rest.requestJson.mock.calls.length).toBeGreaterThanOrEqual(3);
+    await adapter.stopSymbol("BTCUSDT");
+  });
+
+  it("buffers diffs after REST snapshot until bridge overlaps (live U>L does not false-gap)", async () => {
+    const ws = new FakeWs();
+    const rest = {
+      requestJson: vi.fn(() =>
+        Promise.resolve({
+          lastUpdateId: 100,
+          bids: [["50000", "1"]],
+          asks: [["50000.1", "1"]],
+        }),
+      ),
+    };
+    const onGap = vi.fn();
+    const adapter = new BinanceBookFeedAdapter(rest as never, ws, specs, undefined, { onGap });
+    const bestBidQtys: number[] = [];
+    adapter.subscribeBook("BTCUSDT", (b) => {
+      if (b.bestBid !== undefined) bestBidQtys.push(b.bestBid.qty);
+    });
+    await adapter.startSymbol("BTCUSDT");
+    const conn = ws.conns[0]!;
+    conn.emitMessage({
+      U: 105,
+      u: 105,
+      pu: 104,
+      b: [["50000", "9"]],
+      a: [["50000.1", "1"]],
+    });
+    conn.emitMessage({
+      U: 98,
+      u: 102,
+      pu: 97,
+      b: [["50000", "3"]],
+      a: [["50000.1", "1"]],
+    });
+    await Promise.resolve();
+    expect(onGap).not.toHaveBeenCalled();
+    expect(bestBidQtys).toContain(3);
+    await adapter.stopSymbol("BTCUSDT");
+  });
+
   it("book adapter REST-resynchronizes after depth sequence gap", async () => {
     const ws = new FakeWs();
     let snapLastUpdateId = 100;
@@ -104,6 +196,7 @@ describe("Binance market data adapters", () => {
       b: [["50000", "3"]],
       a: [["50000.1", "1"]],
     });
+    await Promise.resolve();
     expect(onGap).toHaveBeenCalledWith("BTCUSDT");
     snapLastUpdateId = 900;
     await vi.waitUntil(() => rest.requestJson.mock.calls.length >= 2);

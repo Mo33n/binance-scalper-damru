@@ -34,7 +34,7 @@ export function attachDevKeepAlive(
   log.info({ event: "startup.dev_keep_alive", intervalMs }, "dev.keep_alive.started");
 
   const id = setInterval(() => {
-    log.info({ event: "runtime.dev_pulse" }, "dev.keep_alive.pulse");
+    log.debug({ event: "runtime.dev_pulse" }, "dev.keep_alive.pulse");
   }, intervalMs);
   options?.timerRegistry?.register("dev_keep_alive_pulse", id);
 

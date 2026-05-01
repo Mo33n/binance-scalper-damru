@@ -11,6 +11,7 @@ Authoritative schema: [`src/config/schema.ts`](../../src/config/schema.ts). Defa
 | `features.reconciliationIntervalOverrideEnabled` | boolean | `false` | Ops | low | Reserved / future override hooks; verify usage in code before relying on name alone. |
 | `features.preFundingFlattenEnabled` | boolean | `false` | Risk | high | Funding-window flatten behavior—confirm wiring before enabling in production. |
 | `features.regimeFlagsEnabled` | boolean | `false` | Trading / risk | med–high | Book/trend/RV-driven `halt_request` → supervisor HALT (SPEC-09); tune thresholds in code or future config. |
+| `features.inventoryDeRiskEnabled` | boolean | `false` | Risk / trading | **high** | When `true`, ledger stress maps to reduce-only exit orders (`risk.deRiskMode`); soak on testnet before live (RFC inventory de-risk). |
 | `features.useWorkerThreads` | boolean | `false` | Platform | med | Per-symbol `worker_threads`; requires built `dist/` worker entry and env signing keys (SPEC-08). |
 
 ## Live promotion gate (related)

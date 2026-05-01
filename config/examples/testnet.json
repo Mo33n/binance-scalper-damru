@@ -7,7 +7,19 @@
     "feeRefreshIntervalMs": 86400000,
     "feeSafetyBufferBps": 1
   },
-  "symbols": ["DOTUSDT"],
+  "symbols": [
+    "DOTUSDT",
+    "XAUUSDT",
+    "XAGUSDT",
+    "RAVEUSDT",
+    "DOGEUSDT",
+    "XRPUSDT",
+    "BNBUSDT",
+    "ADAUSDT",
+    "AVAXUSDT",
+    "LINKUSDT",
+    "TRXUSDT"
+  ],
   "risk": {
     "sessionLossCapQuote": 50,
     "maxOpenNotionalQuote": 300,
@@ -29,15 +41,17 @@
     "warnUtilization": 0.7,
     "criticalUtilization": 0.85,
     "haltUtilization": 0.95,
-    "preFundingFlattenMinutes": 0
+    "preFundingFlattenMinutes": 0,
+    "deRiskMode": "passive_touch"
   },
   "features": {
     "liveQuotingEnabled": true,
-    "markoutFeedbackEnabled": false,
-    "reconciliationIntervalOverrideEnabled": false,
-    "preFundingFlattenEnabled": false,
-    "regimeFlagsEnabled": false,
-    "useWorkerThreads": false
+    "markoutFeedbackEnabled": true,
+    "reconciliationIntervalOverrideEnabled": true,
+    "preFundingFlattenEnabled": true,
+    "regimeFlagsEnabled": true,
+    "inventoryDeRiskEnabled": false,
+    "useWorkerThreads": true
   },
   "quoting": {
     "repriceMinIntervalMs": 400,

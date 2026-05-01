@@ -1,4 +1,5 @@
 import type { SymbolSpec } from "../../infrastructure/binance/types.js";
+import type { DeRiskExitPlan } from "../../domain/quoting/execution-directive.js";
 import type { QuoteIntent } from "../../domain/quoting/types.js";
 import {
   normalizeOrderRequest,
@@ -57,6 +58,20 @@ export class ExecutionService {
     }
   }
 
+  async executeDeRisk(symbol: SymbolSpec, exit: DeRiskExitPlan): Promise<void> {
+    const req = buildDeRiskOrderRequest(symbol, exit, this.idGen);
+    try {
+      await placeOrder(this.client, this.creds, req);
+    } catch (err) {
+      const mapping = mapBinanceOrderError(err);
+      this.log?.error(
+        { event: "order.error", symbol: req.symbol, mapping, clientOrderId: req.clientOrderId },
+        "order.error",
+      );
+      if (mapping.action === "Fatal") throw err;
+    }
+  }
+
   async cancel(symbol: string, orderId: number): Promise<void> {
     await cancelOrder(this.client, this.creds, symbol, orderId);
   }
@@ -64,6 +79,25 @@ export class ExecutionService {
   async cancelAll(symbol: string): Promise<void> {
     await cancelAllOrders(this.client, this.creds, symbol);
   }
+}
+
+export function buildDeRiskOrderRequest(
+  symbol: SymbolSpec,
+  exit: DeRiskExitPlan,
+  idGen: ClientOrderIdGenerator,
+): NewOrderRequest {
+  const base: NewOrderRequest = {
+    symbol: symbol.symbol,
+    side: exit.side,
+    price: exit.limitPrice,
+    quantity: exit.quantity,
+    postOnly: exit.postOnly,
+    reduceOnly: true,
+    clientOrderId: idGen.next(symbol.symbol),
+  };
+  const withIoc: NewOrderRequest =
+    exit.mode === "ioc_touch" ? { ...base, limitTimeInForce: "IOC" } : base;
+  return normalizeOrderRequest(withIoc, symbol);
 }
 
 export function buildOrderRequests(

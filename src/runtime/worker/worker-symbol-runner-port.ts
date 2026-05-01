@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { Worker } from "node:worker_threads";
 import type { FillEvent } from "../../infrastructure/binance/user-stream.js";
 import type { TradingSession } from "../../bootstrap/trading-session-types.js";
@@ -5,6 +6,17 @@ import { buildWorkerBootstrapPayload } from "../messaging/worker-bootstrap.js";
 import { serializeEnvelope } from "../messaging/envelope.js";
 import type { SupervisorCommand } from "../messaging/types.js";
 import type { SymbolRunnerHandle, SymbolRunnerPort } from "./symbol-runner.js";
+
+/**
+ * Production: `dist/.../symbol-worker.js` (tsc output).
+ * Dev (`tsx` / Vitest): `symbol-worker-entry.mjs` calls `tsx/esm/api` `register()` then dynamic-imports
+ * `symbol-worker.ts` so `.js` import specifiers resolve like the main thread.
+ */
+function symbolWorkerEntryUrl(): URL {
+  const parentPath = fileURLToPath(import.meta.url);
+  const name = parentPath.endsWith(".ts") ? "./symbol-worker-entry.mjs" : "./symbol-worker.js";
+  return new URL(name, import.meta.url);
+}
 
 export interface WorkerSymbolRunnerPortDeps {
   readonly session: TradingSession;
@@ -58,7 +70,7 @@ export class WorkerSymbolRunnerPort implements SymbolRunnerPort {
       decisions: this.deps.session.bootstrap.decisions,
     });
 
-    const workerUrl = new URL("./symbol-worker.js", import.meta.url);
+    const workerUrl = symbolWorkerEntryUrl();
     const worker = new Worker(workerUrl, {
       workerData: { payload },
     });

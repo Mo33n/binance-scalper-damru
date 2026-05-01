@@ -9,6 +9,8 @@ export const featuresSchema = z.object({
   reconciliationIntervalOverrideEnabled: z.boolean().default(false),
   preFundingFlattenEnabled: z.boolean().default(false),
   regimeFlagsEnabled: z.boolean().default(false),
+  /** RFC — inventory de-risk: reduce-only exits when ledger stress (default off until soak). */
+  inventoryDeRiskEnabled: z.boolean().default(false),
   /** SPEC-08 — isolate each symbol in `worker_threads` (default off until stable). */
   useWorkerThreads: z.boolean().default(false),
 });
@@ -74,6 +76,8 @@ export const appConfigSchema = z
     criticalUtilization: z.number().gt(0).lt(1).default(0.85),
     haltUtilization: z.number().gt(0).lt(1).default(0.95),
     preFundingFlattenMinutes: z.number().int().nonnegative().default(0),
+    /** RFC — when `features.inventoryDeRiskEnabled`, controls automated exit style; `off` logs suppression and skips cancel/replace de-risk. */
+    deRiskMode: z.enum(["off", "passive_touch", "ioc_touch"]).default("passive_touch"),
   }),
   features: featuresSchema.default({
     liveQuotingEnabled: false,
@@ -81,6 +85,7 @@ export const appConfigSchema = z
     reconciliationIntervalOverrideEnabled: false,
     preFundingFlattenEnabled: false,
     regimeFlagsEnabled: false,
+    inventoryDeRiskEnabled: false,
     useWorkerThreads: false,
   }),
   rollout: rolloutSchema.default({ markoutPromotionWindowMs: 86_400_000 }),

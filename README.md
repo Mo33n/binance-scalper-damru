@@ -120,7 +120,7 @@ CONFIG_PATH=config/examples/testnet.json TRADING_ENV=testnet npm run dev
 
 **Help:** `npm run dev -- --help`
 
-**Stay running (dev):** `npm run dev -- --stay-alive` or `DAMRU_STAY_ALIVE=1` — process keeps going with periodic `runtime.dev_pulse` logs until Ctrl+C (interval from `heartbeatIntervalMs` in config).
+**Stay running (dev):** `npm run dev -- --stay-alive` or `DAMRU_STAY_ALIVE=1` — process keeps going until Ctrl+C (interval from `heartbeatIntervalMs`; optional `runtime.dev_pulse` at **debug** only).
 
 **Production-style:**
 

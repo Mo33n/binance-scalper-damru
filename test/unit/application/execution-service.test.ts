@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { ClientOrderIdGenerator, buildOrderRequests } from "../../../src/application/services/execution-service.js";
+import {
+  ClientOrderIdGenerator,
+  buildDeRiskOrderRequest,
+  buildOrderRequests,
+} from "../../../src/application/services/execution-service.js";
+import type { DeRiskExitPlan } from "../../../src/domain/quoting/execution-directive.js";
 import type { QuoteIntent } from "../../../src/domain/quoting/types.js";
 import type { SymbolSpec } from "../../../src/infrastructure/binance/types.js";
 
@@ -36,5 +41,21 @@ describe("ExecutionService helpers", () => {
     expect(reqs.length).toBe(2);
     expect(reqs[0]?.price).toBe(100.1);
     expect(reqs[0]?.quantity).toBe(0.101);
+  });
+
+  it("buildDeRiskOrderRequest sets IOC for ioc_touch mode", () => {
+    const g = new ClientOrderIdGenerator();
+    const exit: DeRiskExitPlan = {
+      side: "SELL",
+      quantity: 0.1,
+      limitPrice: 100,
+      mode: "ioc_touch",
+      postOnly: false,
+      reduceOnly: true,
+      reason: "test",
+    };
+    const req = buildDeRiskOrderRequest(spec, exit, g);
+    expect(req.limitTimeInForce).toBe("IOC");
+    expect(req.postOnly).toBe(false);
   });
 });

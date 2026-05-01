@@ -15,6 +15,8 @@ export interface NewOrderRequest {
   readonly postOnly: boolean;
   readonly reduceOnly: boolean;
   readonly clientOrderId: string;
+  /** When set, overrides `postOnly` → GTX/GTC mapping (e.g. IOC for de-risk). */
+  readonly limitTimeInForce?: "GTX" | "GTC" | "IOC";
 }
 
 export interface OrderAck {
@@ -84,6 +86,12 @@ export async function placeOrder(
   creds: SignedCredentials,
   req: NewOrderRequest,
 ): Promise<OrderAck> {
+  const timeInForce =
+    req.limitTimeInForce !== undefined
+      ? req.limitTimeInForce
+      : req.postOnly
+        ? "GTX"
+        : "GTC";
   const response = await signedPostJson<{
     symbol: string;
     orderId: number;
@@ -96,7 +104,7 @@ export async function placeOrder(
       symbol: req.symbol,
       side: req.side,
       type: "LIMIT",
-      timeInForce: req.postOnly ? "GTX" : "GTC",
+      timeInForce,
       quantity: req.quantity,
       price: req.price,
       newClientOrderId: req.clientOrderId,

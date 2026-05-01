@@ -46,6 +46,7 @@ export class BinanceBookFeedAdapter implements BookFeed {
   private readonly resyncCountBySymbol = new Map<string, number>();
   private readonly resyncInflight = new Map<string, Promise<void>>();
   private readonly pendingDepthBySymbol = new Map<string, DepthDiffEvent[]>();
+  private readonly bridgeFlushMicrotaskScheduled = new Map<string, boolean>();
   private readonly symbols = new Map<string, SymbolSpec>();
 
   constructor(
@@ -69,12 +70,19 @@ export class BinanceBookFeedAdapter implements BookFeed {
     const book = new DepthOrderBook(symbol, spec.tickSize);
     this.books.set(symbol, book);
 
-    const stream = `/ws/${symbol.toLowerCase()}@depth@100ms`;
+    /** Default `@depth` (~250ms) aggregates less aggressively than `@100ms`; fewer false sequence gaps on busy symbols. */
+    const stream = `/ws/${symbol.toLowerCase()}@depth`;
     const conn = this.ws.connect(stream);
     conn.onMessage((text) => {
       const evt = this.parseDepthStreamMessage(symbol, text);
       if (book.getResyncRequired()) {
         this.enqueueDepthEvent(symbol, evt);
+        return;
+      }
+      /** Applying live while `awaitingSnapshotBridge` false-gaps if the overlapping `[U,u]` packet is still in flight. */
+      if (book.getBridgeAnchorWhenAwaiting() !== undefined) {
+        this.enqueueDepthEvent(symbol, evt);
+        this.scheduleDebouncedBridgeFlush(symbol, book);
         return;
       }
       this.applyDepthEvent(symbol, book, evt);
@@ -105,6 +113,7 @@ export class BinanceBookFeedAdapter implements BookFeed {
     this.conns.delete(symbol);
     this.books.delete(symbol);
     this.pendingDepthBySymbol.delete(symbol);
+    this.bridgeFlushMicrotaskScheduled.delete(symbol);
     return Promise.resolve();
   }
 
@@ -155,9 +164,19 @@ export class BinanceBookFeedAdapter implements BookFeed {
     this.pendingDepthBySymbol.set(symbol, q);
   }
 
+  /** Collapse multiple synchronous WS callbacks into one flush so bridge reorder sees the full batch. */
+  private scheduleDebouncedBridgeFlush(symbol: string, book: DepthOrderBook): void {
+    if (this.bridgeFlushMicrotaskScheduled.get(symbol)) return;
+    this.bridgeFlushMicrotaskScheduled.set(symbol, true);
+    queueMicrotask(() => {
+      this.bridgeFlushMicrotaskScheduled.delete(symbol);
+      this.flushPendingDepth(symbol, book);
+    });
+  }
+
   private flushPendingDepth(symbol: string, book: DepthOrderBook): void {
     const pending = this.pendingDepthBySymbol.get(symbol) ?? [];
-    this.pendingDepthBySymbol.set(symbol, []);
+    if (pending.length === 0) return;
 
     const anchor = book.getBridgeAnchorWhenAwaiting();
     const ordered =
@@ -167,13 +186,24 @@ export class BinanceBookFeedAdapter implements BookFeed {
 
     if (!ordered.ok) {
       book.forceDesyncForGap();
+      /** Snapshots cannot use this buffer; keeping it caused stale diffs to block follow-up REST. */
+      this.pendingDepthBySymbol.set(symbol, []);
       this.emitGapAndScheduleResync(symbol);
       return;
     }
 
-    for (const evt of ordered.events) {
-      if (book.getResyncRequired()) break;
-      this.applyDepthEvent(symbol, book, evt);
+    this.pendingDepthBySymbol.set(symbol, []);
+
+    for (let i = 0; i < ordered.events.length; i++) {
+      if (book.getResyncRequired()) {
+        const tail = ordered.events.slice(i);
+        if (tail.length > 0) {
+          const q = this.pendingDepthBySymbol.get(symbol) ?? [];
+          this.pendingDepthBySymbol.set(symbol, [...tail, ...q]);
+        }
+        break;
+      }
+      this.applyDepthEvent(symbol, book, ordered.events[i]!);
     }
   }
 
@@ -193,10 +223,19 @@ export class BinanceBookFeedAdapter implements BookFeed {
     }
   }
 
+  /**
+   * Gaps during {@link resyncDepth} → {@link flushPendingDepth} call {@link emitGapAndScheduleResync}
+   * while `resyncInflight` is still set, so {@link scheduleResync} no-ops. Without a follow-up, the
+   * book stays desynced until the next unrelated gap. Re-queue here when the job finishes.
+   */
   private scheduleResync(symbol: string): void {
     if (this.resyncInflight.has(symbol)) return;
     const job = this.resyncDepth(symbol).finally(() => {
       this.resyncInflight.delete(symbol);
+      const book = this.books.get(symbol);
+      if (book !== undefined && book.getResyncRequired()) {
+        this.scheduleResync(symbol);
+      }
     });
     this.resyncInflight.set(symbol, job);
     void job;
