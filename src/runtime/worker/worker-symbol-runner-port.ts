@@ -20,6 +20,8 @@ function symbolWorkerEntryUrl(): URL {
 
 export interface WorkerSymbolRunnerPortDeps {
   readonly session: TradingSession;
+  /** RFC X3 — parent REST seeds per symbol (optional). */
+  readonly positionSeeds?: ReadonlyMap<string, { readonly netQty: number; readonly markPrice: number }>;
 }
 
 /**
@@ -61,6 +63,7 @@ export class WorkerSymbolRunnerPort implements SymbolRunnerPort {
       throw new Error(`WorkerSymbolRunnerPort: missing SymbolSpec for ${sym}`);
     }
 
+    const seed = this.deps.positionSeeds?.get(sym);
     const payload = buildWorkerBootstrapPayload({
       workerId: input.workerId,
       symbol: sym,
@@ -68,11 +71,17 @@ export class WorkerSymbolRunnerPort implements SymbolRunnerPort {
       sessionConfig: this.deps.session.config,
       fees: this.deps.session.bootstrap.fees,
       decisions: this.deps.session.bootstrap.decisions,
+      ...(seed !== undefined ? { initialPosition: seed } : {}),
     });
 
     const workerUrl = symbolWorkerEntryUrl();
+    const sab = this.deps.session.depthGateSharedBuffer;
+    const workerData: { payload: unknown; depthGateSab?: SharedArrayBuffer } = { payload };
+    if (sab !== undefined) {
+      workerData.depthGateSab = sab;
+    }
     const worker = new Worker(workerUrl, {
-      workerData: { payload },
+      workerData,
     });
 
     worker.on("message", (data: unknown) => {

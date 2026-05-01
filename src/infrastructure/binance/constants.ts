@@ -9,6 +9,24 @@ export const DEFAULT_TESTNET_WS_BASE_URL = "wss://stream.binancefuture.com/ws" a
 export const DEFAULT_LIVE_REST_BASE_URL = "https://fapi.binance.com" as const;
 export const DEFAULT_LIVE_WS_BASE_URL = "wss://fstream.binance.com/ws" as const;
 
+/**
+ * USD-M combined streams use `wss://<host>/stream?streams=...` (no `/ws` prefix).
+ * Config `wsBaseUrl` is usually `wss://<host>/ws`; this returns `wss://<host>` for that case.
+ */
+export function binanceFuturesWsStreamOrigin(wsBaseUrl: string): string {
+  const u = new URL(wsBaseUrl);
+  return `${u.protocol}//${u.host}`;
+}
+
+/** Sorted, stable `/stream?streams=a@depth/b@depth` path for combined depth (orderbook tasks P6). */
+export function binanceCombinedDepthStreamPath(specs: readonly { readonly symbol: string }[]): string {
+  const streams = [...specs]
+    .map((s) => `${s.symbol.toLowerCase()}@depth`)
+    .sort()
+    .join("/");
+  return `/stream?streams=${streams}`;
+}
+
 /** Hostnames allowed when `environment === "testnet"` */
 export const ALLOWED_TESTNET_REST_HOSTS = new Set<string>(["testnet.binancefuture.com"]);
 export const ALLOWED_TESTNET_WS_HOSTS = new Set<string>(["stream.binancefuture.com"]);

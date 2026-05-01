@@ -8,6 +8,8 @@ export interface PositionLedgerConfig {
   readonly globalMaxAbsNotional: number;
   readonly inventoryEpsilon: number;
   readonly maxTimeAboveEpsilonMs: number;
+  /** Wall-clock gap between repeated `risk.limit_breach` warns for the same key; `0` disables throttling. */
+  readonly riskLimitBreachLogCooldownMs: number;
 }
 
 export type InventoryStressLevel = "none" | "breach";
@@ -19,6 +21,8 @@ export class PositionLedger {
   private readonly seenFills = new Set<string>();
   private readonly fillListeners = new Set<(fill: FillEvent) => void>();
   private readonly aboveEpsilonSince = new Map<string, number>();
+  /** Keys: `symbol_limit:<sym>`, `time_at_risk:<sym>`, or `global_notional` (global breach is one stream). */
+  private readonly lastRiskLimitBreachLogAt = new Map<string, number>();
   private globalNotional = 0;
 
   constructor(cfg: PositionLedgerConfig, log?: LoggerPort) {
@@ -29,6 +33,39 @@ export class PositionLedger {
   /** SPEC-09 — invoked once per deduped fill after ledger mutation (e.g. markout). */
   registerFillListener(listener: (fill: FillEvent) => void): void {
     this.fillListeners.add(listener);
+  }
+
+  /**
+   * RFC X3 — set net qty from REST bootstrap (no synthetic fills). Idempotent per symbol.
+   * Zero qty removes the symbol entry. Does not touch `globalNotional`; call `applySeedMarksForGlobalNotional` after batch seed.
+   */
+  seedPosition(symbol: string, netQty: number, nowMs: number): void {
+    if (Math.abs(netQty) < 1e-12) {
+      this.positions.delete(symbol);
+      this.aboveEpsilonSince.delete(symbol);
+      return;
+    }
+    this.positions.set(symbol, { netQty });
+    if (Math.abs(netQty) > this.cfg.inventoryEpsilon) {
+      if (!this.aboveEpsilonSince.has(symbol)) this.aboveEpsilonSince.set(symbol, nowMs);
+    } else {
+      this.aboveEpsilonSince.delete(symbol);
+    }
+    this.log?.debug({ event: "ledger.position_seeded", symbol, netQty }, "ledger.position_seeded");
+  }
+
+  /**
+   * After seeding positions, set cross-symbol gross notional using marks from `GET /fapi/v2/positionRisk`.
+   */
+  applySeedMarksForGlobalNotional(marks: ReadonlyMap<string, number>): void {
+    let total = 0;
+    for (const [sym, pos] of this.positions) {
+      const m = marks.get(sym);
+      if (m !== undefined && Number.isFinite(m) && m > 0) {
+        total += Math.abs(pos.netQty) * m;
+      }
+    }
+    this.globalNotional = total;
   }
 
   applyFill(fill: FillEvent, nowMs: number): void {
@@ -44,6 +81,32 @@ export class PositionLedger {
     });
     this.positions.set(fill.symbol, next);
     this.globalNotional = this.computeGlobalNotional(fill.price);
+
+    this.log?.info(
+      {
+        event: "execution.fill",
+        symbol: fill.symbol,
+        orderId: fill.orderId,
+        tradeId: fill.tradeId,
+        side: fill.side,
+        quantity: fill.quantity,
+        price: fill.price,
+        netQtyBefore: prev.netQty,
+        netQtyAfter: next.netQty,
+        ...(next.avgEntryPrice !== undefined ? { avgEntryPrice: next.avgEntryPrice } : {}),
+      },
+      "execution.fill",
+    );
+    this.log?.debug(
+      {
+        event: "execution.fill_debug",
+        symbol: fill.symbol,
+        orderId: fill.orderId,
+        tradeId: fill.tradeId,
+        dedupeKey: key,
+      },
+      "execution.fill_debug",
+    );
 
     if (Math.abs(next.netQty) > this.cfg.inventoryEpsilon) {
       if (!this.aboveEpsilonSince.has(fill.symbol)) this.aboveEpsilonSince.set(fill.symbol, nowMs);
@@ -69,16 +132,28 @@ export class PositionLedger {
     const absQty = Math.abs(pos.netQty);
     const absNotional = absQty * markPrice;
     if (absQty > this.cfg.maxAbsQty || absNotional > this.cfg.maxAbsNotional) {
-      this.log?.warn({ event: "risk.limit_breach", symbol, metric: "symbol_limit" }, "risk.limit_breach");
+      this.logRiskLimitBreachIfDue(`symbol_limit:${symbol}`, nowMs, {
+        event: "risk.limit_breach",
+        symbol,
+        metric: "symbol_limit",
+      });
       return "breach";
     }
     if (this.globalNotional > this.cfg.globalMaxAbsNotional) {
-      this.log?.warn({ event: "risk.limit_breach", symbol, metric: "global_notional" }, "risk.limit_breach");
+      this.logRiskLimitBreachIfDue("global_notional", nowMs, {
+        event: "risk.limit_breach",
+        symbol,
+        metric: "global_notional",
+      });
       return "breach";
     }
     const since = this.aboveEpsilonSince.get(symbol);
     if (since !== undefined && nowMs - since > this.cfg.maxTimeAboveEpsilonMs) {
-      this.log?.warn({ event: "risk.limit_breach", symbol, metric: "time_at_risk" }, "risk.limit_breach");
+      this.logRiskLimitBreachIfDue(`time_at_risk:${symbol}`, nowMs, {
+        event: "risk.limit_breach",
+        symbol,
+        metric: "time_at_risk",
+      });
       return "breach";
     }
     return "none";
@@ -87,6 +162,18 @@ export class PositionLedger {
   getSkew(symbol: string) {
     const pos = this.getPosition(symbol);
     return computeInventorySkew(pos.netQty, this.cfg.maxAbsQty);
+  }
+
+  private logRiskLimitBreachIfDue(key: string, nowMs: number, meta: Record<string, unknown>): void {
+    const cooldown = this.cfg.riskLimitBreachLogCooldownMs;
+    if (cooldown <= 0) {
+      this.log?.warn(meta, "risk.limit_breach");
+      return;
+    }
+    const last = this.lastRiskLimitBreachLogAt.get(key);
+    if (last !== undefined && nowMs - last < cooldown) return;
+    this.lastRiskLimitBreachLogAt.set(key, nowMs);
+    this.log?.warn(meta, "risk.limit_breach");
   }
 
   private computeGlobalNotional(markPrice: number): number {

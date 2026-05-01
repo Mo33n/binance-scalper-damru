@@ -18,4 +18,18 @@
 
 **Operator runbook:** [docs/operator/running-the-trader-and-parameters.md](docs/operator/running-the-trader-and-parameters.md) — commands, modes, and trading-focused parameter meanings.
 
+**Testnet market-data soak:** [docs/operator/testnet-depth-soak.md](docs/operator/testnet-depth-soak.md).
+
+**ADRs:** [docs/adr/0001-depth-pipeline-operational-decisions.md](docs/adr/0001-depth-pipeline-operational-decisions.md) — depth reconnect, pending cap, REST budget.
+
 **Rollout & safety (SPEC-10):** [docs/rollout/promotion-checklist.md](docs/rollout/promotion-checklist.md), [docs/rollout/testnet-limitations.md](docs/rollout/testnet-limitations.md), [docs/rollout/emergency-stop.md](docs/rollout/emergency-stop.md), [docs/architecture/feature-flags.md](docs/architecture/feature-flags.md).
+
+**Strategy critique (profit factor, microstructure gaps):** [docs/architecture/strategy-review-profit-factor.md](docs/architecture/strategy-review-profit-factor.md).
+
+**Target north-star (liquidity engine aligned with industry practice):** [docs/architecture/target-liquidity-system.md](docs/architecture/target-liquidity-system.md).
+
+**PRD (phased evolution from strategy review → target architecture):** [docs/prd/PRD-liquidity-engine-evolution.md](docs/prd/PRD-liquidity-engine-evolution.md).
+
+**RFC (normative evolution design):** [docs/rfc/rfc-liquidity-engine-evolution.md](docs/rfc/rfc-liquidity-engine-evolution.md).
+
+**RFC task backlog (step-by-step implementation):** [docs/rfc/liquidity-engine-evolution-tasks.md](docs/rfc/liquidity-engine-evolution-tasks.md).

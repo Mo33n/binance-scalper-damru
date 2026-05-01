@@ -18,9 +18,11 @@ export async function reconcileLedgerPositionsVsExchange(args: {
       continue;
     }
     const localQty = args.ledger.getPosition(symbol).netQty;
-    if (Math.abs(exchangeQty - localQty) <= 1e-8) continue;
+    const delta = exchangeQty - localQty;
+    const mismatch = Math.abs(delta) > 1e-8;
+    if (!mismatch) continue;
     args.log.warn(
-      { event: "reconcile.mismatch", symbol, delta: exchangeQty - localQty },
+      { event: "reconcile.mismatch", symbol, delta },
       "reconcile.mismatch",
     );
     args.requestQuotingHalt(symbol);

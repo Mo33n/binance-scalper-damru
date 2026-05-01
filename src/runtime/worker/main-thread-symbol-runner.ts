@@ -1,6 +1,14 @@
 import type { PositionLedger } from "../../application/services/position-ledger.js";
+import { PortfolioMarkCoordinator } from "../../application/services/portfolio-mark-coordinator.js";
 import type { TradingSession } from "../../bootstrap/trading-session-types.js";
 import type { QuotingSnapshot } from "../../application/ports/quoting.js";
+import { BinanceBookFeedAdapter } from "../../infrastructure/binance/binance-market-data-adapters.js";
+import {
+  sharedDepthSnapshotGate,
+  type DepthSnapshotGatePort,
+} from "../../infrastructure/binance/depth-snapshot-gate.js";
+import { binanceFuturesWsStreamOrigin } from "../../infrastructure/binance/constants.js";
+import { createWsClient } from "../../infrastructure/binance/ws-client.js";
 import { SymbolLoopRuntime } from "./symbol-loop.js";
 import type { MarketDataController } from "./market-data-controller.js";
 import type { SymbolRunnerHandle, SymbolRunnerPort } from "./symbol-runner.js";
@@ -25,9 +33,33 @@ export class MainThreadSymbolRunner implements SymbolRunnerPort {
   private readonly deps: MainThreadRunnerDeps;
   private readonly entries = new Map<string, Entry>();
   private readonly handles = new Map<string, SymbolRunnerHandle>();
+  private readonly sharedBookFeed: BinanceBookFeedAdapter | undefined;
+  private readonly depthSnapshotGate: DepthSnapshotGatePort;
+  private readonly portfolioMarkCoordinator = new PortfolioMarkCoordinator();
 
   constructor(deps: MainThreadRunnerDeps) {
     this.deps = deps;
+    this.depthSnapshotGate = deps.session.depthSnapshotGate ?? sharedDepthSnapshotGate;
+    const { combinedDepthStream, useWorkerThreads } = deps.session.config.features;
+    const useCombined = combinedDepthStream && !useWorkerThreads;
+    if (useCombined) {
+      const origin = binanceFuturesWsStreamOrigin(deps.session.config.binance.wsBaseUrl);
+      const combinedWs = createWsClient(origin, deps.session.log);
+      this.sharedBookFeed = new BinanceBookFeedAdapter(
+        deps.session.venue.rest,
+        combinedWs,
+        deps.session.bootstrap.symbols,
+        deps.session.log,
+        undefined,
+        {
+          combinedDepth: true,
+          starvationWarnStalenessMs: deps.session.config.quoting.maxBookStalenessMs,
+          depthSnapshotGate: this.depthSnapshotGate,
+        },
+      );
+    } else {
+      this.sharedBookFeed = undefined;
+    }
   }
 
   startSymbolRunner(input: {
@@ -68,6 +100,13 @@ export class MainThreadSymbolRunner implements SymbolRunnerPort {
       rest: this.deps.session.venue.rest,
       onStopped: () => {
         input.onExit();
+      },
+      ...(this.sharedBookFeed !== undefined ? { sharedBookFeed: this.sharedBookFeed } : {}),
+      depthSnapshotGate: this.depthSnapshotGate,
+      portfolioGate: {
+        symbols: this.deps.session.config.symbols,
+        specsBySymbol: new Map(this.deps.session.bootstrap.symbols.map((s) => [s.symbol, s])),
+        marks: this.portfolioMarkCoordinator,
       },
     });
 

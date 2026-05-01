@@ -24,4 +24,21 @@ describe("MarkoutTracker", () => {
     expect(s2[0]?.horizonMs).toBe(1000);
     expect(m.getPendingCount()).toBe(0);
   });
+
+  it("tags samples with last liquidity regime state when set before fill", () => {
+    const m = new MarkoutTracker([250], 10);
+    m.noteLiquidityRegimeState("DEFENSIVE");
+    m.onFill({
+      fillId: "f-reg",
+      symbol: "BTCUSDT",
+      side: "SELL",
+      fillPrice: 100,
+      midAtFill: 100,
+      fillAtMs: 0,
+    });
+    m.onMid("BTCUSDT", 99, 300);
+    const samples = m.collectDueSamples(300);
+    expect(samples).toHaveLength(1);
+    expect(samples[0]?.liquidityRegimeState).toBe("DEFENSIVE");
+  });
 });

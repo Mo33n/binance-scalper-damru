@@ -36,12 +36,21 @@ export const workerBootstrapPayloadSchema = z.object({
   workerId: z.string().min(1),
   symbol: z.string().min(1),
   spec: symbolSpecSchema,
+  /** RFC X3 — parent-fetched USD-M position + mark (workers have no signing keys). */
+  initialPosition: z
+    .object({
+      netQty: z.number().finite(),
+      markPrice: z.number().finite().nonnegative(),
+    })
+    .optional(),
   configSubset: z.object({
     binance: z.object({
       restBaseUrl: z.string().url(),
       wsBaseUrl: z.string().url(),
       feeRefreshIntervalMs: z.number(),
       feeSafetyBufferBps: z.number(),
+      maxConcurrentDepthSnapshots: z.number().int().positive().max(32).default(2),
+      depthSnapshotMinIntervalMs: z.number().int().nonnegative().default(100),
     }),
     /** Parent-built plain JSON; validated structurally on parent — worker trusts after zod shell parse. */
     risk: z.any(),
@@ -62,6 +71,7 @@ export type WorkerBootstrapPayloadV1 = Omit<
   readonly spec: SymbolSpec;
   readonly fees: EffectiveFees;
   readonly decisions: readonly BootstrapSymbolDecision[];
+  readonly initialPosition?: { readonly netQty: number; readonly markPrice: number };
   readonly configSubset: {
     readonly binance: AppConfig["binance"];
     readonly risk: AppConfig["risk"];
@@ -88,6 +98,7 @@ export function buildWorkerBootstrapPayload(input: {
   readonly sessionConfig: AppConfig;
   readonly fees: EffectiveFees;
   readonly decisions: readonly BootstrapSymbolDecision[];
+  readonly initialPosition?: { readonly netQty: number; readonly markPrice: number };
 }): WorkerBootstrapPayloadV1 {
   const c = input.sessionConfig;
   return {
@@ -95,6 +106,7 @@ export function buildWorkerBootstrapPayload(input: {
     workerId: input.workerId,
     symbol: input.symbol,
     spec: input.spec,
+    ...(input.initialPosition !== undefined ? { initialPosition: input.initialPosition } : {}),
     configSubset: {
       binance: c.binance,
       risk: c.risk,

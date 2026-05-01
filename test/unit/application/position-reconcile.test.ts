@@ -23,6 +23,7 @@ describe("reconcileLedgerPositionsVsExchange (SPEC-06 T03)", () => {
       globalMaxAbsNotional: 1e9,
       inventoryEpsilon: 0,
       maxTimeAboveEpsilonMs: 60_000,
+      riskLimitBreachLogCooldownMs: 60_000,
     });
     ledger.applyFill(
       {
@@ -46,6 +47,27 @@ describe("reconcileLedgerPositionsVsExchange (SPEC-06 T03)", () => {
     expect(requestQuotingHalt).toHaveBeenCalledWith("BTCUSDT");
   });
 
+  it("X3: no halt when exchange matches REST-seeded ledger", async () => {
+    const ledger = new PositionLedger({
+      maxAbsQty: 10,
+      maxAbsNotional: 1e9,
+      globalMaxAbsNotional: 1e9,
+      inventoryEpsilon: 0,
+      maxTimeAboveEpsilonMs: 60_000,
+      riskLimitBreachLogCooldownMs: 60_000,
+    });
+    ledger.seedPosition("BTCUSDT", 0.5, 1);
+    const requestQuotingHalt = vi.fn();
+    await reconcileLedgerPositionsVsExchange({
+      symbols: ["BTCUSDT"],
+      ledger,
+      fetchNetQty: () => Promise.resolve(0.5),
+      log: silentLog(),
+      requestQuotingHalt,
+    });
+    expect(requestQuotingHalt).not.toHaveBeenCalled();
+  });
+
   it("does not halt when quantities match", async () => {
     const ledger = new PositionLedger({
       maxAbsQty: 10,
@@ -53,6 +75,7 @@ describe("reconcileLedgerPositionsVsExchange (SPEC-06 T03)", () => {
       globalMaxAbsNotional: 1e9,
       inventoryEpsilon: 0,
       maxTimeAboveEpsilonMs: 60_000,
+      riskLimitBreachLogCooldownMs: 60_000,
     });
     const requestQuotingHalt = vi.fn();
     await reconcileLedgerPositionsVsExchange({

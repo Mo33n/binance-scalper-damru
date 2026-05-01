@@ -5,44 +5,46 @@
   "logLevel": "info",
   "binance": {
     "feeRefreshIntervalMs": 86400000,
-    "feeSafetyBufferBps": 1
+    "feeSafetyBufferBps": 2,
+    "maxConcurrentDepthSnapshots": 2,
+    "depthSnapshotMinIntervalMs": 150
   },
   "symbols": [
     "DOTUSDT",
-    "XAUUSDT",
-    "XAGUSDT",
     "RAVEUSDT",
     "DOGEUSDT",
     "XRPUSDT",
-    "BNBUSDT",
     "ADAUSDT",
     "AVAXUSDT",
     "LINKUSDT",
     "TRXUSDT"
   ],
   "risk": {
-    "sessionLossCapQuote": 50,
-    "maxOpenNotionalQuote": 300,
-    "defaultMinSpreadTicks": 5,
+    "sessionLossCapQuote": 200,
+    "maxOpenNotionalQuote": 1200,
+    "defaultMinSpreadTicks": 10,
     "maxDesiredLeverage": 20,
     "riskMaxLeverage": 10,
-    "vpinBucketVolume": 1,
+    "vpinBucketVolume": 2,
     "vpinBucketBasis": "base",
     "vpinEwmaN": 5,
     "vpinStaleFlushMs": 60000,
-    "vpinTau": 0.99,
-    "rvEnabled": false,
+    "vpinTau": 0.6,
+    "rvEnabled": true,
     "rvTau": 0.0005,
-    "maxAbsQty": 5,
-    "maxAbsNotional": 500,
-    "globalMaxAbsNotional": 800,
+    "maxAbsQty": 40,
+    "maxAbsNotional": 1500,
+    "globalMaxAbsNotional": 4000,
     "inventoryEpsilon": 0,
-    "maxTimeAboveEpsilonMs": 60000,
+    "maxTimeAboveEpsilonMs": 45000,
+    "riskLimitBreachLogCooldownMs": 60000,
     "warnUtilization": 0.7,
     "criticalUtilization": 0.85,
     "haltUtilization": 0.95,
     "preFundingFlattenMinutes": 0,
-    "deRiskMode": "passive_touch"
+    "deRiskMode": "passive_touch",
+    "deRiskProfitOnly": false,
+    "deRiskMinProfitTicks": 0
   },
   "features": {
     "liveQuotingEnabled": true,
@@ -50,16 +52,111 @@
     "reconciliationIntervalOverrideEnabled": true,
     "preFundingFlattenEnabled": true,
     "regimeFlagsEnabled": true,
-    "inventoryDeRiskEnabled": false,
-    "useWorkerThreads": true
+    "inventoryDeRiskEnabled": true,
+    "useWorkerThreads": true,
+    "combinedDepthStream": false
   },
   "quoting": {
-    "repriceMinIntervalMs": 400,
-    "maxBookStalenessMs": 10000,
-    "baseOrderQty": 5
+    "repriceMinIntervalMs": 480,
+    "maxBookStalenessMs": 3500,
+    "warnLogCooldownMs": 30000,
+    "baseOrderQty": 10,
+    "regimeTrendStressPolicy": "ladder_mvp",
+    "regimeTrendStressPersistenceN": 4,
+    "regimeTrendThrottleSpreadMult": 1.35,
+    "regimeTrendInventoryMinQty": 0,
+    "regimeStressClearedMs": 500,
+    "regimeTrendImpulseNormalizer": "rv_scaled",
+    "regimeTrendRvZHalt": 2.5,
+    "liquidityEngine": {
+      "enabled": true,
+      "useLegacyCancelAllRefresh": false,
+      "edge": {
+        "enforce": false,
+        "shadowOnly": true,
+        "lambdaSigma": 1,
+        "minEdgeBpsFloor": 3
+      },
+      "portfolio": {
+        "enforceGlobal": false,
+        "betaCapEnabled": false,
+        "betaToRef": {}
+      },
+      "regimeSplit": {
+        "enabled": false,
+        "toxicCombineMode": "any"
+      },
+      "twoLegSafety": {
+        "enabled": true
+      },
+      "fairValue": {
+        "mode": "touch"
+      },
+      "inventorySkew": {
+        "enabled": true,
+        "kappaTicks": 4,
+        "maxShiftTicks": 16
+      },
+      "regimeFsm": {
+        "enabled": true,
+        "hysteresisSamples": 3,
+        "defensiveSpreadMult": 1.3,
+        "reduceSpreadMult": 1.55,
+        "pausedSpreadMult": 2,
+        "flowDefensiveThreshold": 0.62,
+        "microDefensiveThreshold": 0.48,
+        "inventoryReduceThreshold": 0.72,
+        "flowOffThreshold": 0.93
+      },
+      "quoteTriggers": {
+        "enabled": true,
+        "epsilonTicks": 2
+      }
+    }
   },
   "heartbeatIntervalMs": 5000,
   "heartbeatMissThreshold": 3,
   "reconciliationIntervalMs": 60000,
-  "perSymbolOverrides": []
+  "perSymbolOverrides": [
+    {
+      "schemaVersion": "1",
+      "symbol": "ADAUSDT",
+      "minSpreadTicks": 9
+    },
+    {
+      "schemaVersion": "1",
+      "symbol": "AVAXUSDT",
+      "minSpreadTicks": 11
+    },
+    {
+      "schemaVersion": "1",
+      "symbol": "DOGEUSDT",
+      "minSpreadTicks": 7
+    },
+    {
+      "schemaVersion": "1",
+      "symbol": "DOTUSDT",
+      "minSpreadTicks": 11
+    },
+    {
+      "schemaVersion": "1",
+      "symbol": "LINKUSDT",
+      "minSpreadTicks": 11
+    },
+    {
+      "schemaVersion": "1",
+      "symbol": "RAVEUSDT",
+      "minSpreadTicks": 18
+    },
+    {
+      "schemaVersion": "1",
+      "symbol": "TRXUSDT",
+      "minSpreadTicks": 7
+    },
+    {
+      "schemaVersion": "1",
+      "symbol": "XRPUSDT",
+      "minSpreadTicks": 7
+    }
+  ]
 }

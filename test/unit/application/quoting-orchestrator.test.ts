@@ -1,9 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import type { AppConfig } from "../../../src/config/schema.js";
+import { quotingSchema, type AppConfig } from "../../../src/config/schema.js";
 import type { LoggerPort } from "../../../src/application/ports/logger-port.js";
 import type { QuotingSnapshot } from "../../../src/application/ports/quoting.js";
 import type { ExecutionService } from "../../../src/application/services/execution-service.js";
 import { createInventoryReaderForMark } from "../../../src/application/services/inventory-reader-factory.js";
+import { PortfolioMarkCoordinator } from "../../../src/application/services/portfolio-mark-coordinator.js";
 import { PositionLedger } from "../../../src/application/services/position-ledger.js";
 import { QuotingOrchestrator } from "../../../src/application/services/quoting-orchestrator.js";
 import type { EffectiveFees, SymbolSpec } from "../../../src/infrastructure/binance/types.js";
@@ -60,11 +61,14 @@ const testRisk: AppConfig["risk"] = {
   globalMaxAbsNotional: 25_000,
   inventoryEpsilon: 0,
   maxTimeAboveEpsilonMs: 60_000,
+  riskLimitBreachLogCooldownMs: 60_000,
   warnUtilization: 0.7,
   criticalUtilization: 0.85,
   haltUtilization: 0.95,
   preFundingFlattenMinutes: 0,
   deRiskMode: "passive_touch",
+  deRiskProfitOnly: false,
+  deRiskMinProfitTicks: 0,
 };
 
 const testFeaturesLive: AppConfig["features"] = {
@@ -75,12 +79,27 @@ const testFeaturesLive: AppConfig["features"] = {
   regimeFlagsEnabled: false,
   inventoryDeRiskEnabled: false,
   useWorkerThreads: false,
+  combinedDepthStream: false,
 };
 
 const testFeaturesOff: AppConfig["features"] = {
   ...testFeaturesLive,
   liveQuotingEnabled: false,
 };
+
+const testQuoting = quotingSchema.parse({ repriceMinIntervalMs: 250, maxBookStalenessMs: 3000 });
+
+const testQuotingLiquidityEnforced = quotingSchema.parse({
+  repriceMinIntervalMs: 250,
+  maxBookStalenessMs: 3000,
+  liquidityEngine: {
+    enabled: true,
+    edge: { enforce: true, shadowOnly: false, lambdaSigma: 0, minEdgeBpsFloor: 10_000 },
+    portfolio: { enforceGlobal: false },
+    regimeSplit: { enabled: false, toxicCombineMode: "any" },
+    twoLegSafety: { enabled: false },
+  },
+});
 
 function toxicity(score: number) {
   return {
@@ -100,6 +119,7 @@ function makeTestLedger(): PositionLedger {
     globalMaxAbsNotional: testRisk.globalMaxAbsNotional,
     inventoryEpsilon: testRisk.inventoryEpsilon,
     maxTimeAboveEpsilonMs: testRisk.maxTimeAboveEpsilonMs,
+    riskLimitBreachLogCooldownMs: testRisk.riskLimitBreachLogCooldownMs,
   });
 }
 
@@ -144,7 +164,7 @@ describe("QuotingOrchestrator (SPEC-05)", () => {
   ): QuotingOrchestrator {
     const cfg = overrides.cfg ?? {
       risk: testRisk,
-      quoting: { repriceMinIntervalMs: 250, maxBookStalenessMs: 3000 },
+      quoting: testQuoting,
       features: testFeaturesLive,
     };
     const ledger = overrides.positionLedger ?? positionLedger;
@@ -193,7 +213,7 @@ describe("QuotingOrchestrator (SPEC-05)", () => {
     await orch.tick();
     expect(cancelAll).not.toHaveBeenCalled();
     expect(placeFromIntent).not.toHaveBeenCalled();
-    const attention = infoMock.mock.calls.find(
+    const attention = debugMock.mock.calls.find(
       (c) => (c[0] as { event?: string }).event === "quoting.book_unavailable",
     );
     expect(attention?.[0]).toMatchObject({
@@ -247,6 +267,40 @@ describe("QuotingOrchestrator (SPEC-05)", () => {
     expect(c0 as number).toBeLessThan(p1 as number);
   });
 
+  it("P2: liquidity enabled + useLegacyCancelAllRefresh false uses listOpenOrders + executePlacementPlan", async () => {
+    const cancelAll = vi.fn(async () => {});
+    const placeFromIntent = vi.fn(async () => {});
+    const listOpenOrders = vi.fn(async () => []);
+    const executePlacementPlan = vi.fn(async () => {});
+    const execution = {
+      cancelAll,
+      placeFromIntent,
+      listOpenOrders,
+      executePlacementPlan,
+    } as unknown as ExecutionService;
+
+    const quoting = quotingSchema.parse({
+      repriceMinIntervalMs: 250,
+      maxBookStalenessMs: 3000,
+      liquidityEngine: {
+        enabled: true,
+        useLegacyCancelAllRefresh: false,
+      },
+    });
+
+    const orch = makeOrchestrator({
+      execution,
+      cfg: { risk: testRisk, quoting, features: testFeaturesLive },
+    });
+
+    await orch.tick();
+
+    expect(listOpenOrders).toHaveBeenCalledWith(spec.symbol);
+    expect(executePlacementPlan).toHaveBeenCalledTimes(1);
+    expect(cancelAll).not.toHaveBeenCalled();
+    expect(placeFromIntent).not.toHaveBeenCalled();
+  });
+
   it("liveQuotingEnabled false skips trading path", async () => {
     const cancelAll = vi.fn(async () => {});
     const placeFromIntent = vi.fn(async () => {});
@@ -255,7 +309,7 @@ describe("QuotingOrchestrator (SPEC-05)", () => {
       execution,
       cfg: {
         risk: testRisk,
-        quoting: { repriceMinIntervalMs: 250, maxBookStalenessMs: 3000 },
+        quoting: testQuoting,
         features: testFeaturesOff,
       },
     });
@@ -273,6 +327,7 @@ describe("QuotingOrchestrator (SPEC-05)", () => {
       globalMaxAbsNotional: 1_000_000,
       inventoryEpsilon: testRisk.inventoryEpsilon,
       maxTimeAboveEpsilonMs: testRisk.maxTimeAboveEpsilonMs,
+      riskLimitBreachLogCooldownMs: testRisk.riskLimitBreachLogCooldownMs,
     });
     ledger.applyFill(
       {
@@ -290,7 +345,7 @@ describe("QuotingOrchestrator (SPEC-05)", () => {
       positionLedger: ledger,
       cfg: {
         risk: { ...testRisk, maxAbsQty: 1, maxAbsNotional: 1_000_000, globalMaxAbsNotional: 1_000_000 },
-        quoting: { repriceMinIntervalMs: 250, maxBookStalenessMs: 3000 },
+        quoting: testQuoting,
         features: testFeaturesLive,
       },
     });
@@ -325,7 +380,7 @@ describe("QuotingOrchestrator (SPEC-05)", () => {
     await orch.tick();
     stale = false;
     await orch.tick();
-    const restored = infoMock.mock.calls.find(
+    const restored = debugMock.mock.calls.find(
       (c) => (c[0] as { event?: string }).event === "quoting.book_restored",
     );
     expect(restored?.[0]).toMatchObject({ event: "quoting.book_restored" });
@@ -345,6 +400,7 @@ describe("QuotingOrchestrator (SPEC-05)", () => {
       globalMaxAbsNotional: 1_000_000,
       inventoryEpsilon: testRisk.inventoryEpsilon,
       maxTimeAboveEpsilonMs: testRisk.maxTimeAboveEpsilonMs,
+      riskLimitBreachLogCooldownMs: testRisk.riskLimitBreachLogCooldownMs,
     });
     ledger.applyFill(
       {
@@ -362,7 +418,7 @@ describe("QuotingOrchestrator (SPEC-05)", () => {
       positionLedger: ledger,
       cfg: {
         risk: { ...testRisk, maxAbsQty: 1, maxAbsNotional: 1_000_000, globalMaxAbsNotional: 1_000_000 },
-        quoting: { repriceMinIntervalMs: 250, maxBookStalenessMs: 3000 },
+        quoting: testQuoting,
         features: { ...testFeaturesLive, inventoryDeRiskEnabled: true },
       },
     });
@@ -391,6 +447,7 @@ describe("QuotingOrchestrator (SPEC-05)", () => {
       globalMaxAbsNotional: 1_000_000,
       inventoryEpsilon: testRisk.inventoryEpsilon,
       maxTimeAboveEpsilonMs: testRisk.maxTimeAboveEpsilonMs,
+      riskLimitBreachLogCooldownMs: testRisk.riskLimitBreachLogCooldownMs,
     });
     ledger.applyFill(
       {
@@ -408,7 +465,7 @@ describe("QuotingOrchestrator (SPEC-05)", () => {
       positionLedger: ledger,
       cfg: {
         risk: { ...testRisk, maxAbsQty: 1, deRiskMode: "off" },
-        quoting: { repriceMinIntervalMs: 250, maxBookStalenessMs: 3000 },
+        quoting: testQuoting,
         features: { ...testFeaturesLive, inventoryDeRiskEnabled: true },
       },
     });
@@ -432,6 +489,7 @@ describe("QuotingOrchestrator (SPEC-05)", () => {
       globalMaxAbsNotional: 1_000_000,
       inventoryEpsilon: testRisk.inventoryEpsilon,
       maxTimeAboveEpsilonMs: testRisk.maxTimeAboveEpsilonMs,
+      riskLimitBreachLogCooldownMs: testRisk.riskLimitBreachLogCooldownMs,
     });
     ledger.applyFill(
       {
@@ -449,7 +507,7 @@ describe("QuotingOrchestrator (SPEC-05)", () => {
       positionLedger: ledger,
       cfg: {
         risk: { ...testRisk, maxAbsQty: 1 },
-        quoting: { repriceMinIntervalMs: 250, maxBookStalenessMs: 3000 },
+        quoting: testQuoting,
         features: { ...testFeaturesLive, inventoryDeRiskEnabled: false },
       },
     });
@@ -460,5 +518,176 @@ describe("QuotingOrchestrator (SPEC-05)", () => {
       (c) => (c[0] as { event?: string }).event === "quoting.de_risk_intent_empty",
     );
     expect(w?.[0]).toMatchObject({ event: "quoting.de_risk_intent_empty", regime: "inventory_stress" });
+  });
+
+  it("liquidityEngine edge enforce blocks placeFromIntent when hurdle exceeds half-spread", async () => {
+    const cancelAll = vi.fn(async () => {});
+    const placeFromIntent = vi.fn(async () => {});
+    const execution = { cancelAll, placeFromIntent } as unknown as ExecutionService;
+    const orch = makeOrchestrator({
+      execution,
+      cfg: {
+        risk: testRisk,
+        quoting: testQuotingLiquidityEnforced,
+        features: testFeaturesLive,
+      },
+    });
+    await orch.tick();
+    expect(placeFromIntent).not.toHaveBeenCalled();
+    const w = warnMock.mock.calls.find((c) => (c[0] as { event?: string }).event === "liquidity.edge_blocked");
+    expect(w?.[0]).toMatchObject({
+      event: "liquidity.edge_blocked",
+      liquidityEngineVersion: "p0",
+      shadow: false,
+    });
+  });
+
+  it("liquidityEngine portfolio enforceGlobal blocks when projected gross exceeds cap", async () => {
+    const cancelAll = vi.fn(async () => {});
+    const placeFromIntent = vi.fn(async () => {});
+    const execution = { cancelAll, placeFromIntent } as unknown as ExecutionService;
+    const marks = new PortfolioMarkCoordinator();
+    marks.record("BTCUSDT", 50_000);
+    const ledger = makeTestLedger();
+    ledger.applyFill(
+      {
+        symbol: spec.symbol,
+        orderId: 9,
+        tradeId: 9,
+        side: "BUY",
+        quantity: 0.002,
+        price: 50_000,
+      },
+      10_000,
+    );
+    const orch = new QuotingOrchestrator({
+      log,
+      execution,
+      spec,
+      fees,
+      cfg: {
+        risk: { ...testRisk, globalMaxAbsNotional: 150 },
+        quoting: quotingSchema.parse({
+          repriceMinIntervalMs: 250,
+          maxBookStalenessMs: 3000,
+          liquidityEngine: {
+            enabled: true,
+            edge: { enforce: false, shadowOnly: false, lambdaSigma: 0, minEdgeBpsFloor: 0 },
+            portfolio: { enforceGlobal: true },
+            regimeSplit: { enabled: false, toxicCombineMode: "any" },
+            twoLegSafety: { enabled: false },
+          },
+        }),
+        features: testFeaturesLive,
+      },
+      getSnapshot,
+      isHalted: () => false,
+      monotonicNowMs: () => 10_000,
+      effectiveMinSpreadTicks: 5,
+      positionLedger: ledger,
+      createInventoryReader: (markPx, nowMs) =>
+        createInventoryReaderForMark(ledger, spec.symbol, markPx, nowMs),
+      portfolioGate: {
+        symbols: ["BTCUSDT"],
+        specsBySymbol: new Map([[spec.symbol, spec]]),
+        marks,
+      },
+    });
+    await orch.tick();
+    expect(placeFromIntent).not.toHaveBeenCalled();
+    const w = warnMock.mock.calls.find(
+      (c) => (c[0] as { event?: string }).event === "liquidity.portfolio_blocked",
+    );
+    expect(w?.[0]).toMatchObject({
+      event: "liquidity.portfolio_blocked",
+      liquidityEngineVersion: "p0",
+    });
+  });
+
+  it("P1.2 microprice fair anchor shifts bid vs touch mode when L1 sizes asymmetric", async () => {
+    const cancelAll = vi.fn(async () => {});
+    const placeFromIntent = vi.fn(async () => {});
+    const execution = { cancelAll, placeFromIntent } as unknown as ExecutionService;
+
+    const snap = (): QuotingSnapshot => ({
+      readModel: {
+        quotingPausedForBookResync: false,
+        bestBidPx: 49_990,
+        bestAskPx: 50_010,
+        bestBidQty: 100,
+        bestAskQty: 10,
+      },
+      stalenessMs: 0,
+      toxicity: toxicity(0),
+      rvRegime: "normal",
+    });
+
+    const qMicro = quotingSchema.parse({
+      repriceMinIntervalMs: 250,
+      maxBookStalenessMs: 3000,
+      liquidityEngine: {
+        enabled: true,
+        fairValue: { mode: "microprice" },
+      },
+    });
+
+    const orchMicro = makeOrchestrator({
+      execution,
+      cfg: { risk: testRisk, quoting: qMicro, features: testFeaturesLive },
+      getSnapshot: snap,
+    });
+    await orchMicro.tick();
+    expect(placeFromIntent.mock.calls.length).toBeGreaterThanOrEqual(1);
+    const intentMicro = (placeFromIntent.mock.calls[0] as unknown as [unknown, { bidPx?: number }])[1];
+    placeFromIntent.mockClear();
+    cancelAll.mockClear();
+
+    const qTouch = quotingSchema.parse({
+      repriceMinIntervalMs: 250,
+      maxBookStalenessMs: 3000,
+      liquidityEngine: {
+        enabled: true,
+        fairValue: { mode: "touch" },
+      },
+    });
+
+    const orchTouch = makeOrchestrator({
+      execution,
+      cfg: { risk: testRisk, quoting: qTouch, features: testFeaturesLive },
+      getSnapshot: snap,
+    });
+    await orchTouch.tick();
+    expect(placeFromIntent.mock.calls.length).toBeGreaterThanOrEqual(1);
+    const intentTouch = (placeFromIntent.mock.calls[0] as unknown as [unknown, { bidPx?: number }])[1];
+
+    expect(intentMicro.bidPx).toBeDefined();
+    expect(intentTouch.bidPx).toBeDefined();
+    expect(intentMicro.bidPx).not.toBeCloseTo(intentTouch.bidPx!, 6);
+  });
+
+  it("invokes effectiveMinSpreadTicks resolver each tick when provided as function", async () => {
+    let resolverCalls = 0;
+    const cancelAll = vi.fn(async () => {});
+    const placeFromIntent = vi.fn(async () => {});
+    const execution = { cancelAll, placeFromIntent } as unknown as ExecutionService;
+    const orch = new QuotingOrchestrator({
+      log,
+      execution,
+      spec,
+      fees,
+      cfg: { risk: testRisk, quoting: testQuoting, features: testFeaturesLive },
+      getSnapshot,
+      isHalted: () => false,
+      monotonicNowMs: () => 10_000,
+      effectiveMinSpreadTicks: () => {
+        resolverCalls += 1;
+        return 5;
+      },
+      positionLedger,
+      createInventoryReader: (markPx, nowMs) =>
+        createInventoryReaderForMark(positionLedger, spec.symbol, markPx, nowMs),
+    });
+    await orch.tick();
+    expect(resolverCalls).toBe(1);
   });
 });

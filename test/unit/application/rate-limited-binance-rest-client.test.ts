@@ -7,7 +7,7 @@ import { BinanceRestError } from "../../../src/infrastructure/binance/rest-clien
 
 describe("RateLimitedBinanceRestClient (SPEC-09 T01)", () => {
   it("blocks a burst when bucket capacity is exhausted", async () => {
-    let t = 0;
+    const t = 0;
     const mono = () => t;
     const bucket: TokenBucketConfig = { capacity: 1, refillPerSecond: 0 };
     const fetchImpl = vi.fn(() => Promise.resolve(new Response(JSON.stringify({ ok: true }), { status: 200 })));

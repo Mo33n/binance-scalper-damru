@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="Damru-logo.png" alt="DAMRU — Binance scalping bot" width="380" />
+  <img src="logo2.png" alt="DAMRU — Binance scalping bot" width="380" />
 </p>
 
 <p align="center">
@@ -176,6 +176,7 @@ npm run build && CONFIG_PATH=config/examples/testnet.json npm start -- --help
 ## Rollout & safety
 
 - **Operator runbook (how to run + parameters):** [docs/operator/running-the-trader-and-parameters.md](docs/operator/running-the-trader-and-parameters.md)
+- **Testnet depth soak (multi-symbol / combined stream):** [docs/operator/testnet-depth-soak.md](docs/operator/testnet-depth-soak.md)
 - **Testnet vs live:** [docs/rollout/testnet-limitations.md](docs/rollout/testnet-limitations.md)
 - **Feature flags & knobs:** [docs/architecture/feature-flags.md](docs/architecture/feature-flags.md)
 - **Promotion checklist** (includes `npm run verify:rollout`): [docs/rollout/promotion-checklist.md](docs/rollout/promotion-checklist.md)

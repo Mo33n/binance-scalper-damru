@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadConfig } from "../../../src/config/load.js";
-import { appConfigSchema } from "../../../src/config/schema.js";
+import { appConfigSchema, quotingSchema } from "../../../src/config/schema.js";
 
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
 
@@ -103,7 +103,97 @@ describe("loadConfig", () => {
   });
 });
 
+describe("quotingSchema liquidityEngine", () => {
+  it("parses minimal liquidityEngine {} with merged nested defaults", () => {
+    const q = quotingSchema.parse({
+      repriceMinIntervalMs: 250,
+      maxBookStalenessMs: 3000,
+      liquidityEngine: {},
+    });
+    expect(q.liquidityEngine?.enabled).toBe(false);
+    expect(q.liquidityEngine?.edge.enforce).toBe(false);
+    expect(q.liquidityEngine?.edge.shadowOnly).toBe(false);
+    expect(q.liquidityEngine?.portfolio.enforceGlobal).toBe(false);
+    expect(q.liquidityEngine?.regimeSplit.toxicCombineMode).toBe("any");
+    expect(q.liquidityEngine?.twoLegSafety.enabled).toBe(false);
+    expect(q.liquidityEngine?.fairValue.mode).toBe("touch");
+    expect(q.liquidityEngine?.quoteTriggers.enabled).toBe(false);
+    expect(q.liquidityEngine?.useLegacyCancelAllRefresh).toBe(true);
+    expect(q.liquidityEngine?.portfolio.betaCapEnabled).toBe(false);
+    expect(q.liquidityEngine?.portfolio.betaToRef).toEqual({});
+  });
+
+  it("round-trips full liquidityEngine overrides", () => {
+    const q = quotingSchema.parse({
+      repriceMinIntervalMs: 250,
+      maxBookStalenessMs: 3000,
+      liquidityEngine: {
+        enabled: true,
+        edge: { enforce: true, shadowOnly: true, lambdaSigma: 2, minEdgeBpsFloor: 3 },
+        portfolio: { enforceGlobal: true },
+        regimeSplit: { enabled: true, toxicCombineMode: "flow_only" },
+        twoLegSafety: { enabled: true },
+      },
+    });
+    expect(q.liquidityEngine?.enabled).toBe(true);
+    expect(q.liquidityEngine?.edge.lambdaSigma).toBe(2);
+    expect(q.liquidityEngine?.regimeSplit.toxicCombineMode).toBe("flow_only");
+    expect(q.liquidityEngine?.twoLegSafety.enabled).toBe(true);
+  });
+});
+
 describe("appConfigSchema", () => {
+  it("rejects combinedDepthStream with useWorkerThreads", () => {
+    const r = appConfigSchema.safeParse({
+      configSchemaVersion: "1",
+      environment: "testnet",
+      binance: {
+        restBaseUrl: "https://testnet.binancefuture.com",
+        wsBaseUrl: "wss://stream.binancefuture.com/ws",
+      },
+      symbols: ["BTCUSDT"],
+      risk: {
+        sessionLossCapQuote: 100,
+        maxOpenNotionalQuote: 1000,
+        defaultMinSpreadTicks: 5,
+        maxDesiredLeverage: 50,
+        riskMaxLeverage: 20,
+        vpinBucketVolume: 1,
+        vpinBucketBasis: "base",
+        vpinEwmaN: 5,
+        vpinStaleFlushMs: 60_000,
+        vpinTau: 0.6,
+        rvEnabled: false,
+        rvTau: 0.0005,
+        maxAbsQty: 1,
+        maxAbsNotional: 10_000,
+        globalMaxAbsNotional: 25_000,
+        inventoryEpsilon: 0,
+        maxTimeAboveEpsilonMs: 60_000,
+        riskLimitBreachLogCooldownMs: 60_000,
+        warnUtilization: 0.7,
+        criticalUtilization: 0.85,
+        haltUtilization: 0.95,
+        preFundingFlattenMinutes: 0,
+        deRiskMode: "passive_touch",
+      },
+      features: {
+        liveQuotingEnabled: false,
+        markoutFeedbackEnabled: false,
+        reconciliationIntervalOverrideEnabled: false,
+        preFundingFlattenEnabled: false,
+        regimeFlagsEnabled: false,
+        inventoryDeRiskEnabled: false,
+        useWorkerThreads: true,
+        combinedDepthStream: true,
+      },
+      quoting: quotingSchema.parse({ repriceMinIntervalMs: 250, maxBookStalenessMs: 3000 }),
+      credentials: {},
+      perSymbolOverrides: [],
+    });
+    expect(r.success).toBe(false);
+  });
+
   it("rejects unknown root configSchemaVersion", () => {
     const r = appConfigSchema.safeParse({
       configSchemaVersion: "2",

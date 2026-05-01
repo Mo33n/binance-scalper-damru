@@ -9,13 +9,18 @@ import { createSystemClock } from "../../infrastructure/time/system-clock.js";
 import { parseWorkerBootstrapPayload } from "../messaging/worker-bootstrap.js";
 import { parseEnvelope, serializeEnvelope } from "../messaging/envelope.js";
 import { SymbolLoopRuntime } from "./symbol-loop.js";
+import {
+  createDepthSnapshotGate,
+  createSharedDepthSnapshotGate,
+} from "../../infrastructure/binance/depth-snapshot-gate.js";
 
 function main(): void {
   let workerId = "unknown";
   let symbol = "unknown";
 
   try {
-    const payload = parseWorkerBootstrapPayload((workerData as { payload?: unknown }).payload);
+    const wd = workerData as { payload?: unknown; depthGateSab?: SharedArrayBuffer };
+    const payload = parseWorkerBootstrapPayload(wd.payload);
     workerId = payload.workerId;
     symbol = payload.symbol;
 
@@ -25,16 +30,35 @@ function main(): void {
       { baseUrl: payload.configSubset.binance.restBaseUrl, log },
       () => clock.monotonicNowMs(),
     );
-    const execution = createWorkerExecutionService(payload.configSubset.features, rest, log);
+    const execution = createWorkerExecutionService(
+      payload.configSubset.features,
+      payload.configSubset.quoting,
+      rest,
+      log,
+    );
     const lc: PositionLedgerConfig = {
       maxAbsQty: payload.configSubset.risk.maxAbsQty,
       maxAbsNotional: payload.configSubset.risk.maxAbsNotional,
       globalMaxAbsNotional: payload.configSubset.risk.globalMaxAbsNotional,
       inventoryEpsilon: payload.configSubset.risk.inventoryEpsilon,
       maxTimeAboveEpsilonMs: payload.configSubset.risk.maxTimeAboveEpsilonMs,
+      riskLimitBreachLogCooldownMs: payload.configSubset.risk.riskLimitBreachLogCooldownMs,
     };
     const ledger = new PositionLedger(lc, log);
+    if (payload.initialPosition !== undefined) {
+      ledger.seedPosition(payload.symbol, payload.initialPosition.netQty, clock.monotonicNowMs());
+      const mp = payload.initialPosition.markPrice;
+      if (mp > 0) {
+        ledger.applySeedMarksForGlobalNotional(new Map([[payload.symbol, mp]]));
+      }
+    }
     const attachMarketData = process.env["DAMRU_DISABLE_MARKET_DATA"] !== "1";
+
+    const binanceCfg = payload.configSubset.binance;
+    const depthGate =
+      wd.depthGateSab !== undefined
+        ? createSharedDepthSnapshotGate(wd.depthGateSab, binanceCfg.depthSnapshotMinIntervalMs)
+        : createDepthSnapshotGate(binanceCfg);
 
     const loop = SymbolLoopRuntime.start({
       workerId: payload.workerId,
@@ -42,6 +66,7 @@ function main(): void {
       spec: payload.spec,
       clock,
       binance: payload.configSubset.binance,
+      depthSnapshotGate: depthGate,
       risk: payload.configSubset.risk,
       quoting: payload.configSubset.quoting,
       features: payload.configSubset.features,

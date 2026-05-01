@@ -10,6 +10,7 @@ describe("routeUserStreamJsonToLedgers (SPEC-06 T01)", () => {
       globalMaxAbsNotional: 1e9,
       inventoryEpsilon: 0,
       maxTimeAboveEpsilonMs: 60_000,
+      riskLimitBreachLogCooldownMs: 60_000,
     });
     const map = new Map([["BTCUSDT", ledger]]);
     const raw = {

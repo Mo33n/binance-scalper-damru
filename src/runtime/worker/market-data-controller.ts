@@ -7,11 +7,12 @@ import type { BookSnapshot, TapeTrade } from "../../domain/market-data/types.js"
 import {
   BinanceBookFeedAdapter,
   BinanceTapeFeedAdapter,
-  type BinanceBookFeedHooks,
 } from "../../infrastructure/binance/binance-market-data-adapters.js";
+import type { DepthSessionHooks } from "../../infrastructure/binance/depth-session.js";
 import { BoundedQueue } from "../../infrastructure/binance/bounded-queue.js";
 import type { SymbolSpec } from "../../infrastructure/binance/types.js";
 import { createWsClient } from "../../infrastructure/binance/ws-client.js";
+import type { DepthSnapshotGatePort } from "../../infrastructure/binance/depth-snapshot-gate.js";
 import { MarketDataReadModelStore, type MarketDataReadModel } from "./market-data-read-model.js";
 
 const TAPE_BACKLOG_LOG_MIN_GAP_MS = 1000;
@@ -44,6 +45,8 @@ export class MarketDataController {
   private unsubBook: (() => void) | undefined = undefined;
   private unsubTape: (() => void) | undefined = undefined;
   private stopped = false;
+  /** Optional hook after `readModel` updates (debounced quoting triggers). */
+  private onBookAppliedCb: (() => void) | undefined;
 
   constructor(deps: MarketDataControllerDeps) {
     this.symbol = deps.symbol;
@@ -89,10 +92,16 @@ export class MarketDataController {
     return this.signalEngine;
   }
 
+  /** Wire after `QuotingOrchestrator` construction (runner bootstrap order). */
+  setOnBookApplied(cb: (() => void) | undefined): void {
+    this.onBookAppliedCb = cb;
+  }
+
   private onBook(book: BookSnapshot): void {
     const now = this.monotonicNowMs();
     this.readModel.onBookApplied(book, now);
     this.signalEngine.onBookEvent(book);
+    this.onBookAppliedCb?.();
   }
 
   private onTape(trade: TapeTrade): void {
@@ -132,8 +141,15 @@ export class MarketDataController {
 
 /** Minimal host shape for USD-M WS + REST depth (main thread or worker). */
 export interface MarketDataHostContext {
-  readonly config: Pick<AppConfig, "binance">;
+  readonly config: Pick<AppConfig, "binance" | "quoting">;
   readonly venue: Pick<TradingVenueHandles, "rest">;
+  readonly depthSnapshotGate: DepthSnapshotGatePort;
+}
+
+export interface CreateMarketDataControllerOptions {
+  readonly tapeQueueMaxSize?: number;
+  /** Shared multiplexed book feed (`features.combinedDepthStream` on main thread). */
+  readonly sharedBook?: BinanceBookFeedAdapter;
 }
 
 export function createMarketDataControllerForSession(
@@ -142,22 +158,31 @@ export function createMarketDataControllerForSession(
   signalEngine: SignalEngine,
   monotonicNowMs: () => number,
   log: LoggerPort,
-  tapeQueueMaxSize?: number,
+  options?: CreateMarketDataControllerOptions,
 ): MarketDataController {
   const readModel = new MarketDataReadModelStore();
   const ws = createWsClient(session.config.binance.wsBaseUrl, log);
 
-  const hooks: BinanceBookFeedHooks = {
+  const hooks: DepthSessionHooks = {
     onGap: (symbol) => {
       readModel.setQuotingPaused(true);
-      log.warn(
+      log.debug(
         { event: "marketdata.book_resync", symbol, reason: "depth_sequence_gap" },
         "marketdata.book_resync",
       );
     },
   };
 
-  const bookFeed = new BinanceBookFeedAdapter(session.venue.rest, ws, [spec], log, hooks);
+  const shared = options?.sharedBook;
+  const bookFeed =
+    shared ??
+    new BinanceBookFeedAdapter(session.venue.rest, ws, [spec], log, hooks, {
+      starvationWarnStalenessMs: session.config.quoting.maxBookStalenessMs,
+      depthSnapshotGate: session.depthSnapshotGate,
+    });
+  if (shared !== undefined) {
+    shared.registerDepthHooks(spec.symbol, hooks);
+  }
   const tapeFeed = new BinanceTapeFeedAdapter(ws, log);
 
   return new MarketDataController({
@@ -168,6 +193,6 @@ export function createMarketDataControllerForSession(
     book: bookFeed,
     tape: tapeFeed,
     readModel,
-    tapeQueueMaxSize: tapeQueueMaxSize ?? 4096,
+    tapeQueueMaxSize: options?.tapeQueueMaxSize ?? 4096,
   });
 }

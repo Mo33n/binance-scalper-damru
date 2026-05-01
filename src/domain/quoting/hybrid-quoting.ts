@@ -1,3 +1,4 @@
+import { applyInventorySkew } from "../liquidity/inventory-skew.js";
 import type { FlattenIntent, QuoteIntent, QuotingInputs, QuotingRegime } from "./types.js";
 
 export function roundToTick(price: number, tickSize: number): number {
@@ -11,9 +12,32 @@ export function ticksBetween(bidPx: number, askPx: number, tickSize: number): nu
 export function classifyRegime(i: QuotingInputs): QuotingRegime {
   if (i.inventoryMode === "stress") return "inventory_stress";
   const touchSpreadTicks = ticksBetween(i.touch.bestBid, i.touch.bestAsk, i.tickSize);
-  if (i.toxicityScore >= i.toxicityTau || i.rvRegime === "stressed" || touchSpreadTicks < i.minSpreadTicks) {
-    return "toxic";
+  /** Flow / adverse-selection proxy (VPIN + stressed RV bucket). */
+  const flowToxic = i.toxicityScore >= i.toxicityTau || i.rvRegime === "stressed";
+  /** Microstructure: touch tighter than quoted floor. */
+  const microstructureToxic = touchSpreadTicks < i.minSpreadTicks;
+
+  const split = i.regimeSplit;
+  const mode = split?.enabled === true ? split.toxicCombineMode : "any";
+
+  let toxic: boolean;
+  switch (mode) {
+    case "flow_only":
+      toxic = flowToxic;
+      break;
+    case "microstructure_only":
+      toxic = microstructureToxic;
+      break;
+    case "both":
+      toxic = flowToxic && microstructureToxic;
+      break;
+    case "any":
+    default:
+      toxic = flowToxic || microstructureToxic;
+      break;
   }
+
+  if (toxic) return "toxic";
   return "normal";
 }
 
@@ -35,17 +59,22 @@ export function buildHybridQuoteIntent(i: QuotingInputs): QuoteIntent {
   }
 
   const touchSpreadTicks = ticksBetween(i.touch.bestBid, i.touch.bestAsk, i.tickSize);
-  let bid = i.touch.bestBid;
-  let ask = i.touch.bestAsk;
+  const touchMid = (i.touch.bestBid + i.touch.bestAsk) / 2;
+  const anchorMid =
+    i.fairValueMode === "microprice" && i.fairMid !== undefined ? i.fairMid : touchMid;
+  const anchorShift = anchorMid - touchMid;
+
+  let bid = i.touch.bestBid + anchorShift;
+  let ask = i.touch.bestAsk + anchorShift;
 
   if (regime === "toxic") {
-    bid = i.touch.bestBid - i.tickSize;
-    ask = i.touch.bestAsk + i.tickSize;
+    bid = i.touch.bestBid + anchorShift - i.tickSize;
+    ask = i.touch.bestAsk + anchorShift + i.tickSize;
   } else {
     // Prefer wider capture when benign: if touch is already wider than floor + 2, step back one tick each side.
     if (touchSpreadTicks >= i.minSpreadTicks + 2) {
-      bid = i.touch.bestBid - i.tickSize;
-      ask = i.touch.bestAsk + i.tickSize;
+      bid = i.touch.bestBid + anchorShift - i.tickSize;
+      ask = i.touch.bestAsk + anchorShift + i.tickSize;
     }
   }
 
@@ -55,6 +84,21 @@ export function buildHybridQuoteIntent(i: QuotingInputs): QuoteIntent {
   const minAsk = bid + i.minSpreadTicks * i.tickSize;
   if (ask < minAsk) {
     ask = minAsk;
+  }
+
+  const skew = i.inventorySkew;
+  if (skew?.enabled === true) {
+    const shifted = applyInventorySkew({
+      netQty: skew.netQty,
+      maxAbsQty: skew.maxAbsQty,
+      kappaTicks: skew.kappaTicks,
+      tickSize: i.tickSize,
+      bidPx: bid,
+      askPx: ask,
+      ...(skew.maxShiftTicks !== undefined ? { maxShiftTicks: skew.maxShiftTicks } : {}),
+    });
+    bid = shifted.bidPx;
+    ask = shifted.askPx;
   }
 
   return {

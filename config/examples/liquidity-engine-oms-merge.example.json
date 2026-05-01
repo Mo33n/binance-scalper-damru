@@ -1,0 +1,48 @@
+{
+  "quoting": {
+    "liquidityEngine": {
+      "enabled": true,
+      "useLegacyCancelAllRefresh": false,
+      "edge": {
+        "enforce": false,
+        "shadowOnly": false,
+        "lambdaSigma": 0,
+        "minEdgeBpsFloor": 0
+      },
+      "portfolio": {
+        "enforceGlobal": false,
+        "betaCapEnabled": false,
+        "betaToRef": {}
+      },
+      "regimeSplit": {
+        "enabled": false,
+        "toxicCombineMode": "any"
+      },
+      "twoLegSafety": {
+        "enabled": true
+      },
+      "fairValue": {
+        "mode": "touch"
+      },
+      "inventorySkew": {
+        "enabled": false,
+        "kappaTicks": 0
+      },
+      "regimeFsm": {
+        "enabled": true,
+        "hysteresisSamples": 3,
+        "defensiveSpreadMult": 1.25,
+        "reduceSpreadMult": 1.5,
+        "pausedSpreadMult": 2,
+        "flowDefensiveThreshold": 0.65,
+        "microDefensiveThreshold": 0.5,
+        "inventoryReduceThreshold": 0.75,
+        "flowOffThreshold": 0.95
+      },
+      "quoteTriggers": {
+        "enabled": false,
+        "epsilonTicks": 1
+      }
+    }
+  }
+}

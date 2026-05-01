@@ -22,6 +22,10 @@ export const DEFAULT_INVENTORY_MODE: InventoryMode = "normal";
 
 export type QuotingRegime = "normal" | "toxic" | "inventory_stress";
 
+export type ToxicCombineMode = "any" | "flow_only" | "microstructure_only" | "both";
+
+export type FairValueMode = "touch" | "microprice";
+
 export interface QuotingInputs {
   readonly touch: Touch;
   readonly toxicityScore: number;
@@ -31,6 +35,24 @@ export interface QuotingInputs {
   readonly tickSize: number;
   readonly inventoryMode: InventoryMode;
   readonly baseOrderQty: number;
+  /**
+   * When `regimeSplit.enabled`, `classifyRegime` combines flow vs microstructure toxicity per `toxicCombineMode`.
+   * When absent or disabled, behavior matches legacy single-expression toxic classification (`any`).
+   */
+  readonly regimeSplit?: {
+    readonly enabled: boolean;
+    readonly toxicCombineMode: ToxicCombineMode;
+  };
+  /** Optional fair anchor mid (e.g. microprice); used when `fairValueMode === "microprice"`. */
+  readonly fairMid?: number;
+  readonly fairValueMode?: FairValueMode;
+  readonly inventorySkew?: {
+    readonly enabled: boolean;
+    readonly kappaTicks: number;
+    readonly maxShiftTicks?: number;
+    readonly netQty: number;
+    readonly maxAbsQty: number;
+  };
 }
 
 export interface QuoteIntent {

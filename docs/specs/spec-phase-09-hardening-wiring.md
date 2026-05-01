@@ -84,7 +84,9 @@ export interface MarkoutPolicy {
 
 ## 6. Regime flags (H6)
 
-If `features.regimeFlagsEnabled`, evaluate `regime-flags` module inputs from `SignalEngine` + book — output **`halt`** boolean → supervisor.
+If `features.regimeFlagsEnabled`, evaluate regime inputs from book mid drift (`symbol-loop.maybeEmitRegimeHaltAsync`), optionally **RV-scaled** impulse when `quoting.regimeTrendImpulseNormalizer === "rv_scaled"` and `risk.rvEnabled` (σ from `SignalEngine.getRvEwmaSigmaLn()`).
+
+**IPC:** Runner emits **`halt_request`** envelope → **`Supervisor.haltQuotingForSymbol(symbol, reason)`** — **only that symbol’s** runner receives **`HALT_QUOTING`** (multi-symbol sessions continue quoting elsewhere unless a portfolio halt fires separately).
 
 ---
 

@@ -8,6 +8,7 @@ import type { BinanceRestClient } from "../infrastructure/binance/rest-client.js
  */
 export function createWorkerExecutionService(
   features: AppConfig["features"],
+  quoting: AppConfig["quoting"],
   rest: BinanceRestClient,
   log: LoggerPort,
 ): ExecutionService | undefined {
@@ -15,5 +16,8 @@ export function createWorkerExecutionService(
   const secret = process.env["BINANCE_API_SECRET"];
   const dryRun = process.argv.includes("--dry-run");
   if (!key || !secret || dryRun || !features.liveQuotingEnabled) return undefined;
-  return new ExecutionService(rest, { apiKey: key, apiSecret: secret }, undefined, log);
+  return new ExecutionService(rest, { apiKey: key, apiSecret: secret }, undefined, {
+    log,
+    twoLegSafetyEnabled: quoting.liquidityEngine?.twoLegSafety.enabled === true,
+  });
 }

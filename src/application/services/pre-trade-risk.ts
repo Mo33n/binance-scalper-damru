@@ -9,11 +9,17 @@ export function canPlaceQuoteIntent(args: {
   readonly ledger: PositionLedger;
   readonly cfg: AppConfig["risk"];
   readonly spec: SymbolSpec;
+  /**
+   * Per-symbol quote-leg cap (USD-M quote notional) — use when scaling `risk.maxAbsNotional`
+   * by β (RFC P3 beta portfolio cap).
+   */
+  readonly effectiveMaxAbsNotional?: number;
 }): { ok: true } | { ok: false; reason: string } {
   const { intent, ledger, cfg, spec } = args;
   const symbol = spec.symbol;
   const net = ledger.getPosition(symbol).netQty;
   const cs = spec.contractSize;
+  const maxAbsNotionalCap = args.effectiveMaxAbsNotional ?? cfg.maxAbsNotional;
 
   if (intent.bidQty !== undefined && intent.bidPx !== undefined) {
     const q = intent.bidQty;
@@ -23,7 +29,7 @@ export function canPlaceQuoteIntent(args: {
       return { ok: false, reason: "bid_would_exceed_max_abs_qty" };
     }
     const notional = Math.abs(q * px * cs);
-    if (notional > cfg.maxAbsNotional) {
+    if (notional > maxAbsNotionalCap + 1e-9) {
       return { ok: false, reason: "bid_exceeds_max_abs_notional" };
     }
   }
@@ -36,7 +42,7 @@ export function canPlaceQuoteIntent(args: {
       return { ok: false, reason: "ask_would_exceed_max_abs_qty" };
     }
     const notional = Math.abs(q * px * cs);
-    if (notional > cfg.maxAbsNotional) {
+    if (notional > maxAbsNotionalCap + 1e-9) {
       return { ok: false, reason: "ask_exceeds_max_abs_notional" };
     }
   }

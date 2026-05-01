@@ -26,6 +26,21 @@ const quotingSchema = z.object({
 
 Wire defaults in schema merge; update **all** `config/examples/*.json`.
 
+### 2.1 Regime trend stress (`quoting.*`, RFC)
+
+Normative additions (see `src/config/schema.ts` → `quotingSchema`):
+
+| Field | Role |
+|-------|------|
+| `regimeTrendStressPolicy` | `legacy` vs escalation policies (`cancel_throttle`, `ladder_mvp`, `ladder_full`). |
+| `regimeTrendStressPersistenceN` | Consecutive stressed trend samples before `halt_request` (non-legacy). |
+| `regimeTrendThrottleSpreadMult` | Widens resolved min spread ticks while throttle active. |
+| `regimeTrendInventoryMinQty` | Wrong-way flatten gate vs ledger. |
+| `regimeStressClearedMs` | Hysteresis after trend calms. |
+| `regimeTrendImpulseNormalizer` | `none` → percentage drift (`DEFAULT_REGIME_TREND_STRESS`); `rv_scaled` → \|Δln mid\| / σ_ln vs `regimeTrendRvZHalt` when `risk.rvEnabled` and σ warm. |
+
+Implemented in **`SymbolLoopRuntime.maybeEmitRegimeHaltAsync`** + **`Supervisor.haltQuotingForSymbol`** (SPEC-07 / SPEC-09).
+
 ---
 
 ## 3. Domain integration points
@@ -156,3 +171,36 @@ export interface InventoryReader {
 ```
 
 Inject `getInventoryReader` into orchestrator constructor.
+
+---
+
+## 10. Liquidity engine evolution (RFC addendum)
+
+Normative behavior when **`quoting.liquidityEngine`** is present and **`enabled: true`** (see **`src/config/schema.ts`**, **`docs/architecture/feature-flags.md`**, **`docs/rfc/rfc-liquidity-engine-evolution.md`**).
+
+| Mechanism | Config | Orchestrator / execution behavior |
+|-----------|--------|-----------------------------------|
+| Edge gate | `liquidityEngine.edge.*` (`enforce`, `shadowOnly`, `lambdaSigma`, `minEdgeBpsFloor`) | **`passesEdgeGate`** vs maker fees + optional σ hurdle; if **`enforce`** and not OK → skip place (**`liquidity.edge_blocked`**); if **`shadowOnly`** → log **`liquidity.edge_blocked`** with `shadow: true` and still place. |
+| Portfolio gross | `liquidityEngine.portfolio.enforceGlobal`, optional **`betaCapEnabled`** + **`betaToRef`** | **`evaluateGlobalPortfolioGate`** vs **`risk.globalMaxAbsNotional`**; β-weighted gross when **`betaCapEnabled`**. Block → **`liquidity.portfolio_blocked`**. Per-symbol leg cap uses **`effectiveMaxAbsNotional`** when β cap on (**`canPlaceQuoteIntent`**). |
+| Two-leg safety | `liquidityEngine.twoLegSafety.enabled` | **`ExecutionService.placeNormalizedRequests`**: smaller-notional leg first; on second **`placeOrder`** failure → **`cancelOrder`** first leg (**`liquidity.two_leg_rollback`**). |
+| Regime FSM | `liquidityEngine.regimeFsm.*` | Widens **`minSpreadTicks`** via state multiplier; **`OFF`** → skip quoting (**`liquidity.regime_off`**); transitions → **`liquidity.regime_transition`**. |
+| Fair value / skew | `fairValue.mode`, `inventorySkew.*` | Anchors hybrid inputs (microprice, skewed prices). |
+| Quote refresh | `useLegacyCancelAllRefresh` (default **`true`**) | **`false`**: **`listOpenOrders`** + **`diffTargetVsWorking`** + **`executePlacementPlan`** (debug **`liquidity.oms_diff`**). **`true`**: **`cancelAll`** + **`placeFromIntent`** (legacy full replace). |
+| Markout samples | (markout + FSM) | Debug **`liquidity.markout_sample`** may include **`liquidityRegimeState`** when regime FSM + markout feedback both active. |
+
+Cancel/replace step (§4.3 item 9) is superseded by the refresh row above when OMS diff is enabled.
+
+---
+
+## 11. Structured events (liquidity — non-secret payloads)
+
+| `event` | Typical level |
+|---------|----------------|
+| `liquidity.edge_blocked` | warn / info |
+| `liquidity.portfolio_blocked` | warn |
+| `liquidity.two_leg_rollback` | error |
+| `liquidity.regime_transition` / `liquidity.regime_off` | info / warn |
+| `liquidity.oms_diff` | debug |
+| `liquidity.markout_sample` | debug |
+
+Include **`symbol`**, **`liquidityEngineVersion`** (`p0`–`p3`) where emitted.

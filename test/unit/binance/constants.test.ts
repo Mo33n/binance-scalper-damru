@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { validateBinanceUrlsForEnvironment } from "../../../src/infrastructure/binance/constants.js";
+import {
+  binanceCombinedDepthStreamPath,
+  binanceFuturesWsStreamOrigin,
+  validateBinanceUrlsForEnvironment,
+} from "../../../src/infrastructure/binance/constants.js";
 
 describe("validateBinanceUrlsForEnvironment", () => {
   it("accepts default testnet pair", () => {
@@ -10,6 +14,16 @@ describe("validateBinanceUrlsForEnvironment", () => {
         "wss://stream.binancefuture.com/ws",
       );
     }).not.toThrow();
+  });
+
+  it("strips /ws for combined-stream origin", () => {
+    expect(binanceFuturesWsStreamOrigin("wss://fstream.binance.com/ws")).toBe("wss://fstream.binance.com");
+  });
+
+  it("builds stable combined depth path", () => {
+    expect(
+      binanceCombinedDepthStreamPath([{ symbol: "ETHUSDT" }, { symbol: "BTCUSDT" }]),
+    ).toBe("/stream?streams=btcusdt@depth/ethusdt@depth");
   });
 
   it("rejects live REST host under testnet", () => {

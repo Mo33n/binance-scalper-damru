@@ -78,6 +78,26 @@ TRADING_ENV=testnet CONFIG_PATH=config/examples/testnet.json npm start
 
 ---
 
+## Market data hot path (depth book)
+
+Per-symbol depth flows through **`BinanceBookFeedAdapter`** → **`DepthSession`** → **`DepthOrderBook`**. JSON frames are validated in **`depth-stream-parse.ts`**; REST `/fapi/v1/depth` snapshots go through a process-wide **`DepthSnapshotConcurrencyGate`** (`binance.maxConcurrentDepthSnapshots`, optional `depthSnapshotMinIntervalMs`; tests may use the legacy `sharedDepthSnapshotGate` with max 4 and no spacing). WebSocket reconnect uses exponential backoff; `startSymbol` resolves after the **first** successful REST bootstrap while a background loop keeps the feed alive.
+
+```mermaid
+flowchart LR
+  subgraph sync_turn [Same sync turn]
+    WS[WS onMessage] --> Parse[parseDepthStreamMessage]
+    Parse --> Ingest[DepthSession.ingestWsText]
+    Ingest --> Q[queueMicrotask flush]
+    Q --> Apply[DepthOrderBook apply]
+  end
+  Apply --> Emit[subscribeBook handlers]
+  RESTawait[await REST snapshot] -.->|ends turn| Ingest
+```
+
+Anything that **`await`s** (bootstrap, resync, timers) ends the synchronous turn: the next WS diff is **not** coalesced with the prior microtask batch (see header comment in `depth-session.ts`).
+
+---
+
 ## Tests
 
 **Full suite:**

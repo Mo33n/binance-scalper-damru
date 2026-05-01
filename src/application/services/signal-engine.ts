@@ -64,4 +64,14 @@ export class SignalEngine {
       ...(this.lastSpreadTicks !== undefined ? { touchSpreadTicks: this.lastSpreadTicks } : {}),
     };
   }
+
+  /**
+   * EWMA standard deviation of log-mid returns (√ variance). Used for RV-scaled regime trend detection when `risk.rvEnabled`.
+   */
+  getRvEwmaSigmaLn(): number | undefined {
+    if (this.rv === undefined) return undefined;
+    const v = this.rv.getVariance();
+    if (!Number.isFinite(v) || v <= 0) return undefined;
+    return Math.sqrt(v);
+  }
 }

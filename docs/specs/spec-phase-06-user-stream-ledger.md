@@ -140,3 +140,38 @@ Integrate at start of **`QuotingOrchestrator.tick`** before cancel/replace.
 ## 10. Handoff to SPEC-07
 
 Supervisor **`cancelAllForSymbol`** already exists — ensure coordinator **`stop`** ordering: **halt → cancel → close WS**.
+
+---
+
+## 11. Ledger REST bootstrap + portfolio gross (RFC addendum)
+
+### 11.1 Startup seed (order-capable process)
+
+When **`ExecutionService`** exists and credentials are present, **`run-trader`** calls signed **`GET /fapi/v2/positionRisk`** per accepted bootstrap symbol **before** user-stream **`applyFill`** traffic:
+
+- **`PositionLedger.seedPosition(symbol, netQty, nowMs)`** — direct net-qty set (not a fill replay).
+- **`applySeedMarksForGlobalNotional`** uses **`markPrice`** from the same REST row to initialize **`globalNotional`** for multi-symbol gross checks.
+
+**Worker threads:** Each worker receives optional **`initialPosition: { netQty, markPrice }`** in the bootstrap payload (parent REST fetch; workers hold no API secrets).
+
+Live fills remain deduped by **`orderId` + `tradeId`**; seed does not insert synthetic fill keys.
+
+### 11.2 Global gross definition (portfolio gate)
+
+**Default:** For symbols with marks and specs, projected gross is Σ \|qᵢ\| · markᵢ · contractSizeᵢ plus worst-case new quote legs on the active symbol (see **`evaluateGlobalPortfolioGate`** in **`src/application/services/portfolio-gate.ts`**).
+
+**Optional β exposure:** When **`quoting.liquidityEngine.portfolio.betaCapEnabled`** is true, each position row and the quote-symbol intent legs are scaled by **`portfolio.betaToRef[symbol]`** (default β = 1 if omitted). Compare to **`risk.globalMaxAbsNotional`**.
+
+### 11.3 Reconciliation vs seed
+
+Periodic reconcile uses **`fetchUsdMNetPositionQty`** (same **`positionRisk`** endpoint) vs ledger **`netQty`**. After a correct seed at T0, the first interval should not spuriously emit **`reconcile.mismatch`** solely because the ledger started at zero.
+
+---
+
+## 12. Logging (addendum)
+
+| `event` | Notes |
+|---------|--------|
+| `ledger.position_seeded` | debug — per-symbol REST seed |
+| `ledger.bootstrap_seed_complete` | info — batch complete |
+| `ledger.seed_failed` | warn — per-symbol fetch failure |

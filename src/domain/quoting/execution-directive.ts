@@ -8,6 +8,8 @@ import type { QuoteIntent, QuotingInputs, InventoryMode, SymbolExecutionConstrai
 /** Mirrors `AppConfig["risk"]` de-risk slice — keep narrow to avoid config coupling in tests. */
 export type DeRiskRiskConfig = {
   readonly deRiskMode: "off" | "passive_touch" | "ioc_touch";
+  readonly deRiskProfitOnly?: boolean;
+  readonly deRiskMinProfitTicks?: number;
 };
 
 export type ExecutionFeaturesSlice = {
@@ -30,7 +32,11 @@ export type ExecutionDirective =
   | { readonly kind: "quote"; readonly intent: QuoteIntent }
   | { readonly kind: "de_risk"; readonly exit: DeRiskExitPlan }
   | { readonly kind: "stress_suppressed"; readonly reason: "de_risk_mode_off" }
-  | { readonly kind: "de_risk_unfillable"; readonly reason: "flat" | "dust" };
+  | { readonly kind: "de_risk_unfillable"; readonly reason: "flat" | "dust" }
+  | {
+      readonly kind: "de_risk_skipped";
+      readonly reason: "avg_entry_unknown" | "not_profitable_at_touch";
+    };
 
 function floorToStepSize(qty: number, stepSize: number): number {
   const raw = Math.floor(qty / stepSize) * stepSize;
@@ -92,6 +98,32 @@ export function buildDeRiskExitPlan(args: {
 }
 
 /**
+ * True if reduce-only exit at touch would realize ≥ `minProfitTicks` vs avg entry (maker exit px from {@link buildDeRiskExitPlan}).
+ * Long: sell at ask → require `bestAsk >= avgEntry + minProfitTicks×tickSize`.
+ * Short: buy at bid → require `bestBid <= avgEntry − minProfitTicks×tickSize`.
+ */
+export function isTouchDeRiskProfitable(args: {
+  readonly netQty: number;
+  readonly avgEntryPrice: number | undefined;
+  readonly touch: { readonly bestBid: number; readonly bestAsk: number };
+  readonly tickSize: number;
+  readonly minProfitTicks: number;
+}): boolean {
+  const { netQty, avgEntryPrice, touch, tickSize, minProfitTicks } = args;
+  if (avgEntryPrice === undefined || !Number.isFinite(avgEntryPrice)) {
+    return false;
+  }
+  const pad = minProfitTicks * tickSize;
+  if (netQty > 1e-12) {
+    return touch.bestAsk >= avgEntryPrice + pad;
+  }
+  if (netQty < -1e-12) {
+    return touch.bestBid <= avgEntryPrice - pad;
+  }
+  return false;
+}
+
+/**
  * When ledger reports stress but this symbol has no net, hybrid would emit empty `inventory_stress`.
  * For global-only breach, continue two-sided quoting on this symbol by masking inventory mode.
  */
@@ -114,6 +146,8 @@ export function resolveExecutionDirective(args: {
   readonly symbolNetQty: number;
   readonly spec: SymbolExecutionConstraints;
   readonly touch: { readonly bestBid: number; readonly bestAsk: number };
+  /** Ledger avg entry when known — required for profit-only de-risk gate. */
+  readonly avgEntryPrice?: number;
 }): ExecutionDirective {
   const { inventoryMode, features, risk, hybridInputs, symbolNetQty: netQty, spec, touch } = args;
 
@@ -126,6 +160,26 @@ export function resolveExecutionDirective(args: {
   }
 
   if (features.inventoryDeRiskEnabled && risk.deRiskMode !== "off") {
+    const profitOnly = risk.deRiskProfitOnly === true;
+    const minTicks = risk.deRiskMinProfitTicks ?? 0;
+    if (profitOnly) {
+      const avg = args.avgEntryPrice;
+      if (avg === undefined || !Number.isFinite(avg)) {
+        return { kind: "de_risk_skipped", reason: "avg_entry_unknown" };
+      }
+      if (
+        !isTouchDeRiskProfitable({
+          netQty,
+          avgEntryPrice: avg,
+          touch,
+          tickSize: spec.tickSize,
+          minProfitTicks: minTicks,
+        })
+      ) {
+        return { kind: "de_risk_skipped", reason: "not_profitable_at_touch" };
+      }
+    }
+
     const built = buildDeRiskExitPlan({
       spec,
       touch,

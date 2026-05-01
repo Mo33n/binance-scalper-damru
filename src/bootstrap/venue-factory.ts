@@ -60,7 +60,10 @@ export function createTradingVenueHandles(input: {
   }
 
   reasons.push("ready");
-  const execution = new ExecutionService(rest, { apiKey, apiSecret }, undefined, input.log);
+  const execution = new ExecutionService(rest, { apiKey, apiSecret }, undefined, {
+    log: input.log,
+    twoLegSafetyEnabled: input.cfg.quoting.liquidityEngine?.twoLegSafety.enabled === true,
+  });
   input.log.info(
     { event: TRADING_MODE_EVENT, mode: "order_capable" as const, reasons: [...reasons] },
     "trading.mode.selected",

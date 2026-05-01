@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi, type Mock } from "vitest";
 import { LossGuard } from "../../../src/application/services/loss-guard.js";
 import { serializeEnvelope } from "../../../src/runtime/messaging/envelope.js";
 import type { SymbolRunnerHandle, SymbolRunnerPort } from "../../../src/runtime/worker/symbol-runner.js";
@@ -66,7 +66,9 @@ describe("Supervisor", () => {
     now = 2501;
     await sup.checkHeartbeats();
     expect(cancelAllForSymbol).toHaveBeenCalledTimes(1);
-    expect(cancelAllForSymbol).toHaveBeenCalledWith("BTCUSDT");
+    expect(cancelAllForSymbol).toHaveBeenCalledWith("BTCUSDT", {
+      reason: "heartbeat_worker_dead",
+    });
   });
 
   it("rate-limits repeated halt broadcasts by reason", () => {
@@ -150,7 +152,7 @@ describe("Supervisor", () => {
     expect(sink.emitSnapshot).toHaveBeenCalledTimes(1);
   });
 
-  it("SPEC-09: halt_request envelope triggers HALT_QUOTING broadcast", () => {
+  it("SPEC-09: halt_request routes HALT_QUOTING to requesting symbol only", () => {
     const runner = new RunnerStub();
     const sink = { emitSnapshot: vi.fn() };
     const sup = new Supervisor(
@@ -180,10 +182,47 @@ describe("Supervisor", () => {
       }),
     );
 
-    expect(h.sendCommand).toHaveBeenCalledWith({
-      type: "HALT_QUOTING",
-      reason: "regime_book_stress",
-    });
+    expect((h.sendCommand as Mock).mock.calls).toEqual([
+      [{ type: "HALT_QUOTING", reason: "regime_book_stress" }],
+    ]);
+  });
+
+  it("halt_request does not halt sibling symbols", () => {
+    const runner = new RunnerStub();
+    const sink = { emitSnapshot: vi.fn() };
+    const sup = new Supervisor(
+      { heartbeatIntervalMs: 1000, heartbeatMissThreshold: 2 },
+      {
+        runners: runner,
+        statsSink: sink,
+        nowUtcIso: () => "2026-01-01T00:01:00.000Z",
+        monotonicNowMs: () => 0,
+        cancelAllForSymbol: async () => {},
+      },
+    );
+    sup.startSymbols(["BTCUSDT", "ETHUSDT"]);
+    const btc = runner.handles.find((x) => x.symbol === "BTCUSDT");
+    const eth = runner.handles.find((x) => x.symbol === "ETHUSDT");
+    expect(btc).toBeDefined();
+    expect(eth).toBeDefined();
+    if (btc === undefined || eth === undefined) throw new Error("missing handles");
+
+    sup.ingestRawMessage(
+      serializeEnvelope({
+        v: 1,
+        kind: "halt_request",
+        payload: {
+          workerId: "w-BTCUSDT",
+          symbol: "BTCUSDT",
+          reason: "regime_trend_stress",
+        },
+      }),
+    );
+
+    expect((btc.sendCommand as Mock).mock.calls).toEqual([
+      [{ type: "HALT_QUOTING", reason: "regime_trend_stress" }],
+    ]);
+    expect((eth.sendCommand as Mock).mock.calls).toHaveLength(0);
   });
 
   it("SPEC-09 T03: loss guard trips HALT_QUOTING session_loss_cap", () => {
@@ -206,10 +245,12 @@ describe("Supervisor", () => {
         lossGuard,
       },
     );
-    sup.startSymbols(["BTCUSDT"]);
-    const h = runner.handles[0];
-    expect(h).toBeDefined();
-    if (h === undefined) throw new Error("missing runner handle");
+    sup.startSymbols(["BTCUSDT", "ETHUSDT"]);
+    const btc = runner.handles.find((x) => x.symbol === "BTCUSDT");
+    const eth = runner.handles.find((x) => x.symbol === "ETHUSDT");
+    expect(btc).toBeDefined();
+    expect(eth).toBeDefined();
+    if (btc === undefined || eth === undefined) throw new Error("missing runner handles");
 
     sup.ingestRawMessage(
       serializeEnvelope({
@@ -223,9 +264,7 @@ describe("Supervisor", () => {
       }),
     );
 
-    expect(h.sendCommand).toHaveBeenCalledWith({
-      type: "HALT_QUOTING",
-      reason: "session_loss_cap",
-    });
+    expect((btc.sendCommand as Mock).mock.calls).toEqual([[{ type: "HALT_QUOTING", reason: "session_loss_cap" }]]);
+    expect((eth.sendCommand as Mock).mock.calls).toEqual([[{ type: "HALT_QUOTING", reason: "session_loss_cap" }]]);
   });
 });

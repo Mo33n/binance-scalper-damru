@@ -65,4 +65,38 @@ describe("SignalEngine", () => {
     });
     expect(eng.getQuotingInputs().rvRegime).toBe("stressed");
   });
+
+  it("getRvEwmaSigmaLn returns sqrt variance after mids", () => {
+    const eng = new SignalEngine(
+      {
+        targetBucketVolume: 10,
+        basis: "base",
+        ewmaN: 10,
+        staleFlushMs: 1000,
+        rvEnabled: true,
+        rvTau: 1,
+      },
+      fakeClock(0),
+    );
+    expect(eng.getRvEwmaSigmaLn()).toBeUndefined();
+    eng.onBookEvent({
+      symbol: "BTCUSDT",
+      bids: [{ price: 100, qty: 1 }],
+      asks: [{ price: 101, qty: 1 }],
+      bestBid: { price: 100, qty: 1 },
+      bestAsk: { price: 101, qty: 1 },
+      spreadTicks: 1,
+    });
+    eng.onBookEvent({
+      symbol: "BTCUSDT",
+      bids: [{ price: 110, qty: 1 }],
+      asks: [{ price: 111, qty: 1 }],
+      bestBid: { price: 110, qty: 1 },
+      bestAsk: { price: 111, qty: 1 },
+      spreadTicks: 1,
+    });
+    const sigma = eng.getRvEwmaSigmaLn();
+    expect(sigma).toBeDefined();
+    expect(sigma!).toBeGreaterThan(0);
+  });
 });

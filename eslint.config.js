@@ -3,7 +3,15 @@ import tseslint from "typescript-eslint";
 import globals from "globals";
 
 export default tseslint.config(
-  { ignores: ["dist/**", "node_modules/**", "eslint.config.js", "scripts/**/*.mjs"] },
+  {
+    ignores: [
+      "dist/**",
+      "node_modules/**",
+      "eslint.config.js",
+      "scripts/**/*.mjs",
+      "src/runtime/worker/symbol-worker-entry.mjs",
+    ],
+  },
   eslint.configs.recommended,
   ...tseslint.configs.strictTypeChecked,
   {
