@@ -16,9 +16,22 @@ import { createInventoryReaderForMark } from "../../application/services/invento
 import { createSignalEngineForSession } from "../../bootstrap/signal-engine-factory.js";
 import type { AppConfig } from "../../config/schema.js";
 import type { BookSnapshot } from "../../domain/market-data/types.js";
-import { DEFAULT_REGIME_BOOK_HALT, DEFAULT_REGIME_TREND_STRESS } from "../../domain/regime/live-regime-thresholds.js";
-import { detectTrendStress, shouldHaltForBook } from "../../domain/regime/regime-flags.js";
+import { DEFAULT_REGIME_BOOK_HALT } from "../../domain/regime/live-regime-thresholds.js";
+import { shouldHaltForBook } from "../../domain/regime/regime-flags.js";
+import {
+  buildDeRiskExitPlan,
+  isTouchDeRiskProfitable,
+} from "../../domain/quoting/execution-directive.js";
+import {
+  detectTrendStressSample,
+  isWrongWayTrendVsInventory,
+  regimePolicyUsesT0Cancel,
+  regimeThrottleSpreadMult,
+  shouldEmitTrendHaltRequest,
+} from "../../domain/regime/regime-trend-stress-policy.js";
+import { canPlaceDeRiskExit } from "../../application/services/pre-trade-risk.js";
 import type { FillEvent } from "../../infrastructure/binance/user-stream.js";
+import type { PortfolioMarkCoordinator } from "../../application/services/portfolio-mark-coordinator.js";
 import type { EffectiveFees, SymbolSpec } from "../../infrastructure/binance/types.js";
 import { serializeEnvelope } from "../messaging/envelope.js";
 import type { HeartbeatPayload, SupervisorCommand } from "../messaging/types.js";
@@ -54,6 +67,12 @@ export interface SymbolLoopStartParams {
   /** When set, depth uses this shared adapter (`features.combinedDepthStream` on main thread). */
   readonly sharedBookFeed?: BinanceBookFeedAdapter;
   readonly depthSnapshotGate: DepthSnapshotGatePort;
+  /** Cross-symbol portfolio gross gate (optional; main-thread runners typically pass shared marks cache). */
+  readonly portfolioGate?: {
+    readonly symbols: readonly string[];
+    readonly specsBySymbol: ReadonlyMap<string, SymbolSpec>;
+    readonly marks: PortfolioMarkCoordinator;
+  };
 }
 
 type LoopState = "running" | "stopping" | "stopped";
@@ -81,8 +100,21 @@ export class SymbolLoopRuntime {
   private readonly onStopped: (() => void) | undefined;
   private lastMidForRegime: number | undefined;
   private regimeHaltEmitted = false;
+  private trendStressConsecutive = 0;
+  private regimeThrottleActive = false;
+  private regimeEpisodeCancelDone = false;
+  private trendClearSinceMono: number | undefined;
+  private lastWrongWayDeRiskSkipLogMono = Number.NEGATIVE_INFINITY;
+  private readonly loopParams: SymbolLoopStartParams;
+  private quotingOrchestrator: QuotingOrchestrator | undefined;
+  private quoteDebounceTimer: ReturnType<typeof setTimeout> | undefined;
+  private lastQuoteEvalMono = 0;
+  private lastProbeMid: number | undefined;
+  private lastProbeBb: number | undefined;
+  private lastProbeBa: number | undefined;
 
   private constructor(params: SymbolLoopStartParams) {
+    this.loopParams = params;
     this.workerId = params.workerId;
     this.symbol = params.symbol;
     this.emitEnvelope = params.emitEnvelope;
@@ -158,6 +190,11 @@ export class SymbolLoopRuntime {
           });
         });
       }
+      const baseSpreadTicks = resolveAcceptedMinSpreadTicks(
+        sym,
+        params.decisions,
+        params.risk.defaultMinSpreadTicks,
+      );
       const orch = new QuotingOrchestrator({
         log: params.log,
         execution: params.execution,
@@ -175,27 +212,85 @@ export class SymbolLoopRuntime {
         },
         isHalted: () => (this.state === "running" ? this.halted : true),
         monotonicNowMs: params.monotonicNowMs,
-        effectiveMinSpreadTicks: resolveAcceptedMinSpreadTicks(
-          sym,
-          params.decisions,
-          params.risk.defaultMinSpreadTicks,
-        ),
+        /** Trend-stress throttle only; `QuotingOrchestrator` applies liquidity FSM spread mult on top (RFC P1.5). */
+        effectiveMinSpreadTicks: () => {
+          const mult = regimeThrottleSpreadMult(params.quoting, this.regimeThrottleActive);
+          return Math.max(1, Math.ceil(baseSpreadTicks * mult));
+        },
         positionLedger: params.positionLedger,
         createInventoryReader: (markPx, nowMs) =>
           createInventoryReaderForMark(params.positionLedger, sym, markPx, nowMs),
         ...(markoutFeedback !== undefined ? { markoutFeedback } : {}),
+        getSigmaLn: () => this.signalEngine.getRvEwmaSigmaLn(),
+        ...(params.portfolioGate !== undefined ? { portfolioGate: params.portfolioGate } : {}),
+      });
+      this.quotingOrchestrator = orch;
+      marketData.setOnBookApplied(() => {
+        this.scheduleDebouncedOrchestratorTick("book_update");
       });
       const qMs = params.quoting.repriceMinIntervalMs;
       this.quotingIntervalId = setInterval(() => {
         if (this.state !== "running") return;
-        if (params.features.regimeFlagsEnabled) {
-          this.maybeEmitRegimeHalt(params);
-        }
-        void orch.tick().catch((err: unknown) => {
-          const msg = err instanceof Error ? err.message : String(err);
-          this.log.warn({ event: "quoting.tick_failed", msg }, "quoting.tick_failed");
-        });
+        void this.runOrchestratorTickCycle(params, "interval");
       }, qMs);
+    }
+  }
+
+  /**
+   * Debounced mid/BBO jump repricing. Precedence: trend-stress halt/cancel in `maybeEmitRegimeHaltAsync`
+   * runs only on the timer path today; jump triggers call the same `orch.tick()` without duplicating regime wiring.
+   */
+  private scheduleDebouncedOrchestratorTick(reason: string): void {
+    const p = this.loopParams;
+    const le = p.quoting.liquidityEngine;
+    if (this.state !== "running" || le?.enabled !== true || le.quoteTriggers.enabled !== true) return;
+    const rm = this.marketData?.getReadModel();
+    if (rm?.bestBidPx === undefined || rm.bestAskPx === undefined) return;
+    const mid = (rm.bestBidPx + rm.bestAskPx) / 2;
+    const bb = rm.bestBidPx;
+    const ba = rm.bestAskPx;
+    const tick = p.spec?.tickSize ?? 1;
+    const epsTicks = le.quoteTriggers.epsilonTicks;
+    if (this.lastProbeMid === undefined) {
+      this.lastProbeMid = mid;
+      this.lastProbeBb = bb;
+      this.lastProbeBa = ba;
+      return;
+    }
+    const midJump = Math.abs(mid - this.lastProbeMid) >= epsTicks * tick;
+    const bboMove = bb !== this.lastProbeBb || ba !== this.lastProbeBa;
+    this.lastProbeMid = mid;
+    this.lastProbeBb = bb;
+    this.lastProbeBa = ba;
+    if (!midJump && !bboMove) return;
+
+    if (this.quoteDebounceTimer !== undefined) {
+      clearTimeout(this.quoteDebounceTimer);
+      this.quoteDebounceTimer = undefined;
+    }
+    const floorMs = p.quoting.repriceMinIntervalMs;
+    const now = p.monotonicNowMs();
+    const elapsed = now - this.lastQuoteEvalMono;
+    const delay = computeQuoteTriggerDelayMs(floorMs, elapsed);
+    this.quoteDebounceTimer = setTimeout(() => {
+      this.quoteDebounceTimer = undefined;
+      void this.runOrchestratorTickCycle(p, reason);
+    }, delay);
+  }
+
+  private async runOrchestratorTickCycle(params: SymbolLoopStartParams, tickReason: string): Promise<void> {
+    const orch = this.quotingOrchestrator;
+    if (orch === undefined || this.state !== "running") return;
+    try {
+      if (params.features.regimeFlagsEnabled) {
+        await this.maybeEmitRegimeHaltAsync(params);
+      }
+      if (this.state !== "running") return;
+      await orch.tick();
+      this.lastQuoteEvalMono = params.monotonicNowMs();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.log.warn({ event: "quoting.tick_failed", msg, tickReason }, "quoting.tick_failed");
     }
   }
 
@@ -220,6 +315,8 @@ export class SymbolLoopRuntime {
         quotingPausedForBookResync: rm.quotingPausedForBookResync,
         bestBidPx: rm.bestBidPx,
         bestAskPx: rm.bestAskPx,
+        ...(rm.bestBidQty !== undefined ? { bestBidQty: rm.bestBidQty } : {}),
+        ...(rm.bestAskQty !== undefined ? { bestAskQty: rm.bestAskQty } : {}),
       },
       stalenessMs,
       toxicity: this.signalEngine.getSnapshot(),
@@ -245,6 +342,10 @@ export class SymbolLoopRuntime {
     this.state = "stopping";
     const symbol = this.symbol;
     this.stopChain = (async () => {
+      if (this.quoteDebounceTimer !== undefined) {
+        clearTimeout(this.quoteDebounceTimer);
+        this.quoteDebounceTimer = undefined;
+      }
       if (this.quotingIntervalId !== undefined) {
         clearInterval(this.quotingIntervalId);
         this.quotingIntervalId = undefined;
@@ -252,7 +353,7 @@ export class SymbolLoopRuntime {
       clearInterval(this.intervalId);
       await this.marketData?.stop();
       if (this.execution !== undefined) {
-        await this.execution.cancelAll(symbol);
+        await this.execution.cancelAll(symbol, { reason: "symbol_runner_stop" });
       }
       if (!this.exitNotified) {
         this.exitNotified = true;
@@ -265,7 +366,154 @@ export class SymbolLoopRuntime {
     this.stopChain = undefined;
   }
 
-  private maybeEmitRegimeHalt(params: SymbolLoopStartParams): void {
+  private resetRegimeTrendSoftState(): void {
+    this.trendStressConsecutive = 0;
+    this.regimeThrottleActive = false;
+    this.regimeEpisodeCancelDone = false;
+    this.trendClearSinceMono = undefined;
+  }
+
+  private async cancelRegimeWorkingOrdersIfNeeded(params: SymbolLoopStartParams, reason: string): Promise<void> {
+    if (!regimePolicyUsesT0Cancel(params.quoting.regimeTrendStressPolicy)) return;
+    if (this.regimeEpisodeCancelDone) return;
+    if (this.execution === undefined) {
+      this.log.debug(
+        { event: "runner.regime_cancel_skipped", symbol: this.symbol, reason, cause: "no_execution" },
+        "runner.regime_cancel_skipped",
+      );
+      return;
+    }
+    this.regimeEpisodeCancelDone = true;
+    try {
+      await this.execution.cancelAll(this.symbol, {
+        reason: "regime_episode_cancel",
+        detail: { regimeReason: reason },
+      });
+      this.log.info({ event: "runner.regime_t0_cancel", symbol: this.symbol, reason }, "runner.regime_t0_cancel");
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.log.warn(
+        { event: "runner.regime_t0_cancel_failed", symbol: this.symbol, reason, msg },
+        "runner.regime_t0_cancel_failed",
+      );
+    }
+  }
+
+  private async tryWrongWayDeRiskOnTrend(
+    params: SymbolLoopStartParams,
+    touch: { readonly bestBid: number; readonly bestAsk: number },
+  ): Promise<void> {
+    const policy = params.quoting.regimeTrendStressPolicy;
+    if (policy !== "ladder_mvp" && policy !== "ladder_full") return;
+    if (params.spec === undefined) return;
+    if (!params.features.inventoryDeRiskEnabled) {
+      const now = params.monotonicNowMs();
+      if (now - this.lastWrongWayDeRiskSkipLogMono >= params.quoting.repriceMinIntervalMs) {
+        this.lastWrongWayDeRiskSkipLogMono = now;
+        this.log.warn(
+          {
+            event: "quoting.regime_flatten_skipped_de_risk_off",
+            symbol: params.symbol,
+            policy,
+          },
+          "quoting.regime_flatten_skipped_de_risk_off",
+        );
+      }
+      return;
+    }
+    if (params.risk.deRiskMode === "off") {
+      const now = params.monotonicNowMs();
+      if (now - this.lastWrongWayDeRiskSkipLogMono >= params.quoting.repriceMinIntervalMs) {
+        this.lastWrongWayDeRiskSkipLogMono = now;
+        this.log.warn(
+          {
+            event: "quoting.regime_flatten_skipped_de_risk_mode_off",
+            symbol: params.symbol,
+          },
+          "quoting.regime_flatten_skipped_de_risk_mode_off",
+        );
+      }
+      return;
+    }
+    if (this.execution === undefined) return;
+
+    const netQty = this.positionLedger.getPosition(params.symbol).netQty;
+    const plan = buildDeRiskExitPlan({
+      spec: params.spec,
+      touch,
+      netQty,
+      mode: params.risk.deRiskMode,
+    });
+    if (!plan.ok) return;
+
+    if (params.risk.deRiskProfitOnly === true) {
+      const pos = this.positionLedger.getPosition(params.symbol);
+      const avg = pos.avgEntryPrice;
+      if (avg === undefined || !Number.isFinite(avg)) {
+        return;
+      }
+      if (
+        !isTouchDeRiskProfitable({
+          netQty,
+          avgEntryPrice: avg,
+          touch,
+          tickSize: params.spec.tickSize,
+          minProfitTicks: params.risk.deRiskMinProfitTicks ?? 0,
+        })
+      ) {
+        return;
+      }
+    }
+
+    const gate = canPlaceDeRiskExit({ exit: plan.exit, netQty });
+    if (!gate.ok) return;
+
+    try {
+      await this.execution.cancelAll(this.symbol, { reason: "regime_wrong_way_clear" });
+      await this.execution.executeDeRisk(params.spec, plan.exit, {
+        reason: "regime_wrong_way_de_risk",
+        detail: {
+          mode: plan.exit.mode,
+          side: plan.exit.side,
+          quantity: plan.exit.quantity,
+        },
+      });
+      this.log.info(
+        {
+          event: "quoting.regime_trend_wrong_way_de_risk",
+          symbol: params.symbol,
+          side: plan.exit.side,
+          quantity: plan.exit.quantity,
+          mode: plan.exit.mode,
+        },
+        "quoting.regime_trend_wrong_way_de_risk",
+      );
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.log.warn(
+        { event: "quoting.regime_trend_wrong_way_de_risk_failed", symbol: params.symbol, msg },
+        "quoting.regime_trend_wrong_way_de_risk_failed",
+      );
+    }
+  }
+
+  private maybeClearTrendStressWithHysteresis(params: SymbolLoopStartParams): void {
+    const clearedMs = params.quoting.regimeStressClearedMs;
+    const now = params.monotonicNowMs();
+    if (clearedMs <= 0) {
+      this.resetRegimeTrendSoftState();
+      return;
+    }
+    if (this.trendClearSinceMono === undefined) {
+      this.trendClearSinceMono = now;
+      return;
+    }
+    if (now - this.trendClearSinceMono >= clearedMs) {
+      this.resetRegimeTrendSoftState();
+    }
+  }
+
+  private async maybeEmitRegimeHaltAsync(params: SymbolLoopStartParams): Promise<void> {
     if (this.regimeHaltEmitted) return;
     const md = this.marketData;
     if (md === undefined) return;
@@ -284,22 +532,69 @@ export class SymbolLoopRuntime {
     };
 
     if (shouldHaltForBook(bookSnap, DEFAULT_REGIME_BOOK_HALT)) {
+      await this.cancelRegimeWorkingOrdersIfNeeded(params, "regime_book_stress");
+      this.regimeThrottleActive = regimePolicyUsesT0Cancel(params.quoting.regimeTrendStressPolicy);
       this.emitRegimeHalt(params.workerId, params.symbol, "regime_book_stress");
       return;
     }
 
     const mid = rm.lastMid;
     if (mid !== undefined && this.lastMidForRegime !== undefined) {
-      if (detectTrendStress(this.lastMidForRegime, mid, DEFAULT_REGIME_TREND_STRESS) === "stressed") {
-        this.emitRegimeHalt(params.workerId, params.symbol, "regime_trend_stress");
+      const trendStressed =
+        detectTrendStressSample({
+          lastMid: this.lastMidForRegime,
+          mid,
+          impulseNormalizer: params.quoting.regimeTrendImpulseNormalizer,
+          rvSigmaLn: this.signalEngine.getRvEwmaSigmaLn(),
+          rvZHalt: params.quoting.regimeTrendRvZHalt,
+        }) === "stressed";
+
+      if (trendStressed) {
+        this.trendClearSinceMono = undefined;
+        this.trendStressConsecutive += 1;
+        const policy = params.quoting.regimeTrendStressPolicy;
+        if (regimePolicyUsesT0Cancel(policy)) {
+          await this.cancelRegimeWorkingOrdersIfNeeded(params, "regime_trend_stress");
+          this.regimeThrottleActive = true;
+        }
+
+        const emitHalt = shouldEmitTrendHaltRequest({
+          policy,
+          consecutiveStressedSamples: this.trendStressConsecutive,
+          persistenceN: params.quoting.regimeTrendStressPersistenceN,
+        });
+
+        if (emitHalt) {
+          const deltaMid = mid - this.lastMidForRegime;
+          const netQty = this.positionLedger.getPosition(params.symbol).netQty;
+          if (
+            isWrongWayTrendVsInventory({
+              deltaMid,
+              netQty,
+              minAbsQty: params.quoting.regimeTrendInventoryMinQty,
+            })
+          ) {
+            await this.tryWrongWayDeRiskOnTrend(params, { bestBid: bb, bestAsk: ba });
+          }
+
+          this.emitRegimeHalt(params.workerId, params.symbol, "regime_trend_stress");
+        }
         return;
       }
-    }
-    if (mid !== undefined) {
+
+      if (this.trendStressConsecutive > 0 || this.regimeThrottleActive) {
+        this.maybeClearTrendStressWithHysteresis(params);
+      }
+      if (mid !== undefined) {
+        this.lastMidForRegime = mid;
+      }
+    } else if (mid !== undefined) {
       this.lastMidForRegime = mid;
     }
 
     if (this.signalEngine.getQuotingInputs().rvRegime === "stressed") {
+      await this.cancelRegimeWorkingOrdersIfNeeded(params, "regime_rv_stressed");
+      this.regimeThrottleActive = regimePolicyUsesT0Cancel(params.quoting.regimeTrendStressPolicy);
       this.emitRegimeHalt(params.workerId, params.symbol, "regime_rv_stressed");
     }
   }
@@ -327,12 +622,18 @@ export class SymbolLoopRuntime {
       case "RESUME_QUOTING":
         this.halted = false;
         this.regimeHaltEmitted = false;
+        this.resetRegimeTrendSoftState();
         break;
       case "CANCEL_ALL":
         if (cmd.symbol === this.symbol) {
-          await this.execution?.cancelAll(this.symbol);
+          await this.execution?.cancelAll(this.symbol, { reason: "supervisor_cancel_all_command" });
         }
         break;
     }
   }
+}
+
+/** Exported for tests — debounce wait until next eligible quoting tick (RFC P1.6). */
+export function computeQuoteTriggerDelayMs(floorMs: number, elapsedSinceLastTickMs: number): number {
+  return Math.max(0, floorMs - elapsedSinceLastTickMs);
 }

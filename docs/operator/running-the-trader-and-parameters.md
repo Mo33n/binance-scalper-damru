@@ -166,6 +166,21 @@ Priority order for most desks:
 - **`perSymbolOverrides[].minSpreadTicks`**: Replaces `risk.defaultMinSpreadTicks` for that symbol in the **bootstrap** fee/spread gate (`resolveBootstrapMinSpreadTicks` → `effectiveMinSpreadTicks` on accepted symbols). See `config/README.md`.
 - **`risk.maxDesiredLeverage`**, **`risk.riskMaxLeverage`**, **`risk.maxOpenNotionalQuote`**: Interact with **leverage selection** at bootstrap — constraining **max leverage** vs **brackets** is how you keep notionals sane before you ever quote.
 
+### 5.9 Liquidity engine umbrella (`quoting.liquidityEngine`) — RFC
+
+Nested under **`quoting`**; defaults merge when the key exists (even `{}`). Full matrix: [`docs/architecture/feature-flags.md`](../architecture/feature-flags.md), RFC: [`docs/rfc/rfc-liquidity-engine-evolution.md`](../rfc/rfc-liquidity-engine-evolution.md).
+
+| Intent | What to turn |
+|--------|----------------|
+| **Stay on legacy cancel-all refresh** | Omit engine or **`enabled: false`**, or keep **`useLegacyCancelAllRefresh: true`** (default). Full **`cancelAll`** + **`placeFromIntent`** each refresh when intent changes. |
+| **Targeted OMS diff (less REST churn)** | **`enabled: true`**, **`useLegacyCancelAllRefresh: false`**, **`liveQuotingEnabled: true`**. Uses **`GET /fapi/v1/openOrders`** + diff; rollback = set **`useLegacyCancelAllRefresh`** back to **`true`**. |
+| **Shadow-soak economics gate** | **`edge.shadowOnly: true`**, **`edge.enforce: false`** — logs **`liquidity.edge_blocked`** without blocking quotes; flip **`enforce: true`** when comfortable. |
+| **Hard-enforce fee / σ hurdle** | **`edge.enforce: true`** — blocked quotes log **`liquidity.edge_blocked`** (`shadow: false`) and do not place. |
+| **Portfolio gross cap** | **`portfolio.enforceGlobal: true`** — blocks when projected Σ notionals exceeds **`risk.globalMaxAbsNotional`** (optional β-weighting: **`portfolio.betaCapEnabled`** + **`betaToRef`**). |
+| **Two-leg rollback** | **`twoLegSafety.enabled: true`** — if posting bid+ask and the second leg fails, cancel the first (**`liquidity.two_leg_rollback`**). |
+
+**Operational progression:** Prove **`liveQuotingEnabled`** on testnet with **`liquidityEngine.enabled: false`** first. Enable **`liquidityEngine`** with edge/portfolio in **shadow** or **off**, then enforce one axis at a time. **`reconciliationIntervalMs`** still compares REST position vs ledger — startup **REST seed** of the ledger (when keys + execution exist) avoids false **`reconcile.mismatch`** at T0.
+
 ---
 
 ## 6. Full parameter reference (trading meaning)
@@ -198,6 +213,7 @@ Priority order for most desks:
 | **`repriceMinIntervalMs`** | Minimum time between **quoting ticks** (cancel/replace cycle attempts) per symbol. |
 | **`maxBookStalenessMs`** | Skip quoting when computed book age exceeds this. |
 | **`baseOrderQty`** | Optional explicit **base qty per leg**; else ~5% of `maxAbsQty` convention. |
+| **`liquidityEngine`** | Optional RFC umbrella — **`enabled`** defaults **`false`**. Key flags: **`useLegacyCancelAllRefresh`** (OMS diff vs cancel-all), **`edge.enforce` / `shadowOnly`**, **`portfolio.enforceGlobal`**, **`twoLegSafety.enabled`**, **`regimeFsm.enabled`**, **`betaCapEnabled`** + **`betaToRef`**. See §5.9 and [`feature-flags.md`](../architecture/feature-flags.md). |
 
 ### 6.4 Rollout (`rollout.*`)
 
@@ -298,4 +314,4 @@ Parameters are **liability curves**. The JSON does not know your clearing arrang
 
 ---
 
-*Last reviewed: 2026-05-01*
+*Last reviewed: 2026-05-01 (liquidity engine §5.9 / §6.3)*

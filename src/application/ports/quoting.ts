@@ -5,6 +5,9 @@ export interface QuotingReadModelView {
   readonly quotingPausedForBookResync: boolean;
   readonly bestBidPx: number | undefined;
   readonly bestAskPx: number | undefined;
+  /** L1 sizes when depth provides them (microprice / liquidity fair value). */
+  readonly bestBidQty?: number;
+  readonly bestAskQty?: number;
 }
 
 export interface QuotingSnapshot {

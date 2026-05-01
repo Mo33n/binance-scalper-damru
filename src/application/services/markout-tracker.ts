@@ -12,11 +12,14 @@ export interface MarkoutSample {
   readonly horizonMs: number;
   readonly value: number;
   readonly reliable: boolean;
+  /** Set when `noteLiquidityRegimeState` was called before the fill (liquidity FSM + markout both on). */
+  readonly liquidityRegimeState?: string;
 }
 
 interface PendingFill {
   readonly input: FillMarkoutInput;
   readonly dueAtMs: number[];
+  readonly liquidityRegimeStateAtFill?: string;
 }
 
 export class MarkoutTracker {
@@ -26,6 +29,7 @@ export class MarkoutTracker {
   private midBySymbol = new Map<string, { mid: number; atMs: number }>();
   private ewma = 0;
   private alpha = 0.2;
+  private lastLiquidityRegimeState: string | undefined;
 
   constructor(horizonsMs: readonly number[], maxPending = 1024) {
     this.horizonsMs = [...horizonsMs].sort((a, b) => a - b);
@@ -44,6 +48,9 @@ export class MarkoutTracker {
     this.pending.set(input.fillId, {
       input,
       dueAtMs: this.horizonsMs.map((h) => input.fillAtMs + h),
+      ...(this.lastLiquidityRegimeState !== undefined
+        ? { liquidityRegimeStateAtFill: this.lastLiquidityRegimeState }
+        : {}),
     });
   }
 
@@ -61,11 +68,26 @@ export class MarkoutTracker {
         const midNow = midEntry?.mid ?? p.input.fillPrice;
         const signed = p.input.side === "BUY" ? 1 : -1;
         const value = reliable ? signed * (midNow - p.input.fillPrice) : 0;
-        out.push({ fillId, horizonMs: due - p.input.fillAtMs, value, reliable });
+        out.push({
+          fillId,
+          horizonMs: due - p.input.fillAtMs,
+          value,
+          reliable,
+          ...(p.liquidityRegimeStateAtFill !== undefined
+            ? { liquidityRegimeState: p.liquidityRegimeStateAtFill }
+            : {}),
+        });
         this.ewma = this.alpha * value + (1 - this.alpha) * this.ewma;
       }
       if (remaining.length === 0) this.pending.delete(fillId);
-      else this.pending.set(fillId, { input: p.input, dueAtMs: remaining });
+      else
+        this.pending.set(fillId, {
+          input: p.input,
+          dueAtMs: remaining,
+          ...(p.liquidityRegimeStateAtFill !== undefined
+            ? { liquidityRegimeStateAtFill: p.liquidityRegimeStateAtFill }
+            : {}),
+        });
     }
     return out;
   }
@@ -76,5 +98,10 @@ export class MarkoutTracker {
 
   getPendingCount(): number {
     return this.pending.size;
+  }
+
+  /** RFC P3 — last FSM state from orchestrator; copied onto fills at `onFill` time. */
+  noteLiquidityRegimeState(state: string): void {
+    this.lastLiquidityRegimeState = state;
   }
 }

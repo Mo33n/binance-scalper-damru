@@ -38,7 +38,7 @@ export interface RequestShutdownPayload {
   readonly reason: string;
 }
 
-/** SPEC-09 — runner asks supervisor to portfolio-halt (regime trip). */
+/** SPEC-09 — runner asks supervisor to halt **this symbol only** (`haltQuotingForSymbol`). */
 export interface HaltRequestPayload {
   readonly workerId: string;
   readonly symbol: string;

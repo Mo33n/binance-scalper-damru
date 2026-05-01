@@ -1,4 +1,5 @@
 import type { LoggerPort } from "../../application/ports/logger-port.js";
+import type { OrderActionContext } from "../../application/services/execution-service.js";
 import type { PortfolioSnapshot, PortfolioSnapshotLine, StatsSink } from "../../application/ports/stats-sink.js";
 import type { LossGuard } from "../../application/services/loss-guard.js";
 import { PnlService } from "../../application/services/pnl-service.js";
@@ -31,7 +32,7 @@ export interface SupervisorDeps {
   readonly statsSink: StatsSink;
   readonly nowUtcIso: () => string;
   readonly monotonicNowMs: () => number;
-  readonly cancelAllForSymbol: (symbol: string) => Promise<void>;
+  readonly cancelAllForSymbol: (symbol: string, ctx?: OrderActionContext) => Promise<void>;
   readonly log?: LoggerPort;
   /** SPEC-09 — portfolio PnL after each metric delta; trip → `HALT_QUOTING` `session_loss_cap`. */
   readonly lossGuard?: LossGuard;
@@ -97,7 +98,7 @@ export class Supervisor {
       }
       if (env.kind === "halt_request") {
         const p = env.payload as HaltRequestPayload;
-        this.broadcast({ type: "HALT_QUOTING", reason: p.reason });
+        this.haltQuotingForSymbol(p.symbol, p.reason);
         return;
       }
       if (env.kind === "worker_fatal") {
@@ -117,19 +118,35 @@ export class Supervisor {
     const maxGap = this.cfg.heartbeatIntervalMs * this.cfg.heartbeatMissThreshold;
     for (const [symbol, last] of this.lastHeartbeat.entries()) {
       if (now - last <= maxGap) continue;
-      await this.deps.cancelAllForSymbol(symbol);
+      await this.deps.cancelAllForSymbol(symbol, { reason: "heartbeat_worker_dead" });
       this.lastHeartbeat.set(symbol, now);
       this.deps.log?.error({ event: "worker.dead_detected", symbol }, "worker.dead_detected");
     }
   }
 
+  /**
+   * Portfolio-wide halt (loss cap, shutdown, etc.). Dedupes once per reason across all runners.
+   */
   broadcast(command: SupervisorCommand): void {
     if (command.type === "HALT_QUOTING") {
-      const key = `${command.type}:${command.reason}`;
+      const key = `${command.type}::portfolio::${command.reason}`;
       if (this.haltedReasons.has(key)) return;
       this.haltedReasons.add(key);
     }
     for (const h of this.handles.values()) h.sendCommand(command);
+  }
+
+  /**
+   * Quoting halt for one symbol only (regime trips, reconcile drift). Dedupes per (symbol, reason).
+   */
+  haltQuotingForSymbol(symbol: string, reason: string): void {
+    const key = `${symbol}::HALT_QUOTING::${reason}`;
+    if (this.haltedReasons.has(key)) return;
+    this.haltedReasons.add(key);
+    const h = this.handles.get(symbol);
+    if (h !== undefined) {
+      h.sendCommand({ type: "HALT_QUOTING", reason });
+    }
   }
 
   emitSnapshot(): PortfolioSnapshot {
@@ -214,7 +231,7 @@ export class Supervisor {
   }
 
   private async onWorkerExit(symbol: string): Promise<void> {
-    await this.deps.cancelAllForSymbol(symbol);
+    await this.deps.cancelAllForSymbol(symbol, { reason: "worker_thread_exit" });
     this.deps.log?.error({ event: "worker.exit", symbol }, "worker.exit");
   }
 }

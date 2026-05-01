@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   buildDeRiskExitPlan,
+  isTouchDeRiskProfitable,
   resolveExecutionDirective,
 } from "../../../src/domain/quoting/execution-directive.js";
 import type { QuotingInputs } from "../../../src/domain/quoting/types.js";
@@ -74,6 +75,84 @@ describe("resolveExecutionDirective", () => {
     if (d.kind === "quote") {
       expect(d.intent.regime).not.toBe("inventory_stress");
     }
+  });
+
+  it("stress + profit-only skips when touch exit would be losing (long)", () => {
+    const d = resolveExecutionDirective({
+      inventoryMode: "stress",
+      features: { inventoryDeRiskEnabled: true },
+      risk: { deRiskMode: "passive_touch", deRiskProfitOnly: true, deRiskMinProfitTicks: 0 },
+      hybridInputs: baseHybridInputs("stress"),
+      symbolNetQty: 0.5,
+      spec,
+      touch: { bestBid: 50_000, bestAsk: 50_001 },
+      avgEntryPrice: 50_010,
+    });
+    expect(d.kind).toBe("de_risk_skipped");
+    if (d.kind === "de_risk_skipped") expect(d.reason).toBe("not_profitable_at_touch");
+  });
+
+  it("stress + profit-only skips when avg entry unknown", () => {
+    const d = resolveExecutionDirective({
+      inventoryMode: "stress",
+      features: { inventoryDeRiskEnabled: true },
+      risk: { deRiskMode: "passive_touch", deRiskProfitOnly: true },
+      hybridInputs: baseHybridInputs("stress"),
+      symbolNetQty: 0.5,
+      spec,
+      touch: { bestBid: 50_000, bestAsk: 50_001 },
+    });
+    expect(d.kind).toBe("de_risk_skipped");
+    if (d.kind === "de_risk_skipped") expect(d.reason).toBe("avg_entry_unknown");
+  });
+
+  it("stress + profit-only allows de-risk when ask clears avg (long)", () => {
+    const d = resolveExecutionDirective({
+      inventoryMode: "stress",
+      features: { inventoryDeRiskEnabled: true },
+      risk: { deRiskMode: "passive_touch", deRiskProfitOnly: true, deRiskMinProfitTicks: 0 },
+      hybridInputs: baseHybridInputs("stress"),
+      symbolNetQty: 0.5,
+      spec,
+      touch: { bestBid: 50_000, bestAsk: 50_020 },
+      avgEntryPrice: 50_010,
+    });
+    expect(d.kind).toBe("de_risk");
+  });
+});
+
+describe("isTouchDeRiskProfitable", () => {
+  it("long: requires ask >= avg + pad", () => {
+    expect(
+      isTouchDeRiskProfitable({
+        netQty: 1,
+        avgEntryPrice: 100,
+        touch: { bestBid: 99.9, bestAsk: 100.05 },
+        tickSize: 0.01,
+        minProfitTicks: 5,
+      }),
+    ).toBe(true);
+    expect(
+      isTouchDeRiskProfitable({
+        netQty: 1,
+        avgEntryPrice: 100,
+        touch: { bestBid: 99.9, bestAsk: 100.04 },
+        tickSize: 0.01,
+        minProfitTicks: 5,
+      }),
+    ).toBe(false);
+  });
+
+  it("short: requires bid <= avg - pad", () => {
+    expect(
+      isTouchDeRiskProfitable({
+        netQty: -2,
+        avgEntryPrice: 100,
+        touch: { bestBid: 99.94, bestAsk: 100.1 },
+        tickSize: 0.01,
+        minProfitTicks: 5,
+      }),
+    ).toBe(true);
   });
 });
 

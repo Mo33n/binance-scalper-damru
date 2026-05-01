@@ -30,15 +30,28 @@ function main(): void {
       { baseUrl: payload.configSubset.binance.restBaseUrl, log },
       () => clock.monotonicNowMs(),
     );
-    const execution = createWorkerExecutionService(payload.configSubset.features, rest, log);
+    const execution = createWorkerExecutionService(
+      payload.configSubset.features,
+      payload.configSubset.quoting,
+      rest,
+      log,
+    );
     const lc: PositionLedgerConfig = {
       maxAbsQty: payload.configSubset.risk.maxAbsQty,
       maxAbsNotional: payload.configSubset.risk.maxAbsNotional,
       globalMaxAbsNotional: payload.configSubset.risk.globalMaxAbsNotional,
       inventoryEpsilon: payload.configSubset.risk.inventoryEpsilon,
       maxTimeAboveEpsilonMs: payload.configSubset.risk.maxTimeAboveEpsilonMs,
+      riskLimitBreachLogCooldownMs: payload.configSubset.risk.riskLimitBreachLogCooldownMs,
     };
     const ledger = new PositionLedger(lc, log);
+    if (payload.initialPosition !== undefined) {
+      ledger.seedPosition(payload.symbol, payload.initialPosition.netQty, clock.monotonicNowMs());
+      const mp = payload.initialPosition.markPrice;
+      if (mp > 0) {
+        ledger.applySeedMarksForGlobalNotional(new Map([[payload.symbol, mp]]));
+      }
+    }
     const attachMarketData = process.env["DAMRU_DISABLE_MARKET_DATA"] !== "1";
 
     const binanceCfg = payload.configSubset.binance;

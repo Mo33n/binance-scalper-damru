@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import type { LoggerPort } from "../../../src/application/ports/logger-port.js";
 import type { TradingSession } from "../../../src/bootstrap/trading-session-types.js";
+import { quotingSchema } from "../../../src/config/schema.js";
 import { PositionLedger } from "../../../src/application/services/position-ledger.js";
 import { parseEnvelope } from "../../../src/runtime/messaging/envelope.js";
 import { MainThreadSymbolRunner } from "../../../src/runtime/worker/main-thread-symbol-runner.js";
@@ -12,6 +13,7 @@ function stubLedger(): PositionLedger {
     globalMaxAbsNotional: 1e12,
     inventoryEpsilon: 0,
     maxTimeAboveEpsilonMs: 60_000,
+    riskLimitBreachLogCooldownMs: 60_000,
   });
 }
 
@@ -48,7 +50,7 @@ function makeMinimalSession(input: {
         rvEnabled: false,
         rvTau: 0.0005,
       },
-      quoting: { repriceMinIntervalMs: 250, maxBookStalenessMs: 3000 },
+      quoting: quotingSchema.parse({ repriceMinIntervalMs: 250, maxBookStalenessMs: 3000 }),
       features: {
         liveQuotingEnabled: false,
         markoutFeedbackEnabled: false,
@@ -181,6 +183,6 @@ describe("MainThreadSymbolRunner (SPEC-03)", () => {
     });
     await h.stop();
     expect(cancelAll).toHaveBeenCalledTimes(1);
-    expect(cancelAll).toHaveBeenCalledWith("BTCUSDT");
+    expect(cancelAll).toHaveBeenCalledWith("BTCUSDT", { reason: "symbol_runner_stop" });
   });
 });

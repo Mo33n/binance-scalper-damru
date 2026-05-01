@@ -57,9 +57,13 @@ setInterval(() => {
 
 **Miss rule (existing code):** `maxGap = heartbeatIntervalMs * heartbeatMissThreshold`; if `now - last > maxGap` → `cancelAllForSymbol(symbol)` and reset `lastHeartbeat` to `now` (see `checkHeartbeats` implementation — do not change semantics without epic review).
 
-### 3.3 `broadcast` / `HALT_QUOTING`
+### 3.3 `broadcast` / `HALT_QUOTING` / per-symbol halt
 
-`Supervisor.broadcast` exists — use for shutdown and loss trips. **`HALT_QUOTING`** dedupes by `type:reason` key — choose **unique reasons** per trip (`shutdown`, `session_loss_cap`, etc.).
+- **`broadcast(command)`** — portfolio-wide fan-out to **every** runner handle. Used for **`shutdown`**, **`session_loss_cap`**, and any deliberate **kill-all** policy. **`HALT_QUOTING`** dedupes once per reason via internal key `HALT_QUOTING::portfolio::<reason>`.
+
+- **`haltQuotingForSymbol(symbol, reason)`** — sends **`HALT_QUOTING`** **only** to the handle for **`symbol`**. Used for **`halt_request`** envelopes from runners (regime trips) and **`position_drift:<sym>`** from reconcile. Dedupes per **`symbol::HALT_QUOTING::<reason>`** so unrelated symbols keep quoting.
+
+Choose **unique `reason` strings** where operators grep logs (`shutdown`, `session_loss_cap`, `regime_trend_stress`, …).
 
 ### 3.4 Shutdown coordinator
 

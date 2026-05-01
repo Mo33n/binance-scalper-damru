@@ -1,4 +1,5 @@
 import type { PositionLedger } from "../../application/services/position-ledger.js";
+import { PortfolioMarkCoordinator } from "../../application/services/portfolio-mark-coordinator.js";
 import type { TradingSession } from "../../bootstrap/trading-session-types.js";
 import type { QuotingSnapshot } from "../../application/ports/quoting.js";
 import { BinanceBookFeedAdapter } from "../../infrastructure/binance/binance-market-data-adapters.js";
@@ -34,6 +35,7 @@ export class MainThreadSymbolRunner implements SymbolRunnerPort {
   private readonly handles = new Map<string, SymbolRunnerHandle>();
   private readonly sharedBookFeed: BinanceBookFeedAdapter | undefined;
   private readonly depthSnapshotGate: DepthSnapshotGatePort;
+  private readonly portfolioMarkCoordinator = new PortfolioMarkCoordinator();
 
   constructor(deps: MainThreadRunnerDeps) {
     this.deps = deps;
@@ -101,6 +103,11 @@ export class MainThreadSymbolRunner implements SymbolRunnerPort {
       },
       ...(this.sharedBookFeed !== undefined ? { sharedBookFeed: this.sharedBookFeed } : {}),
       depthSnapshotGate: this.depthSnapshotGate,
+      portfolioGate: {
+        symbols: this.deps.session.config.symbols,
+        specsBySymbol: new Map(this.deps.session.bootstrap.symbols.map((s) => [s.symbol, s])),
+        marks: this.portfolioMarkCoordinator,
+      },
     });
 
     this.entries.set(sym, { loop });

@@ -45,6 +45,8 @@ export class MarketDataController {
   private unsubBook: (() => void) | undefined = undefined;
   private unsubTape: (() => void) | undefined = undefined;
   private stopped = false;
+  /** Optional hook after `readModel` updates (debounced quoting triggers). */
+  private onBookAppliedCb: (() => void) | undefined;
 
   constructor(deps: MarketDataControllerDeps) {
     this.symbol = deps.symbol;
@@ -90,10 +92,16 @@ export class MarketDataController {
     return this.signalEngine;
   }
 
+  /** Wire after `QuotingOrchestrator` construction (runner bootstrap order). */
+  setOnBookApplied(cb: (() => void) | undefined): void {
+    this.onBookAppliedCb = cb;
+  }
+
   private onBook(book: BookSnapshot): void {
     const now = this.monotonicNowMs();
     this.readModel.onBookApplied(book, now);
     this.signalEngine.onBookEvent(book);
+    this.onBookAppliedCb?.();
   }
 
   private onTape(trade: TapeTrade): void {

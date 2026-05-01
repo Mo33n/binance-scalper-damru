@@ -17,9 +17,13 @@ import { createTradingVenueHandles } from "./venue-factory.js";
 import type { TradingSession } from "./trading-session-types.js";
 import type { AppConfig } from "../config/schema.js";
 import { PositionLedger, type PositionLedgerConfig } from "../application/services/position-ledger.js";
+import type { OrderActionContext } from "../application/services/execution-service.js";
 import { AccountUserStreamCoordinator } from "../application/services/account-user-stream-coordinator.js";
 import { reconcileLedgerPositionsVsExchange } from "../application/services/position-reconcile.js";
-import { fetchUsdMNetPositionQty } from "../infrastructure/binance/reconcile-rest.js";
+import {
+  fetchUsdMNetPositionQty,
+  fetchUsdMPositionRiskRow,
+} from "../infrastructure/binance/reconcile-rest.js";
 import { createWsClient } from "../infrastructure/binance/ws-client.js";
 import {
   allocateDepthGateSharedBuffer,
@@ -59,6 +63,7 @@ function positionLedgerConfigFromRisk(risk: AppConfig["risk"]): PositionLedgerCo
     globalMaxAbsNotional: risk.globalMaxAbsNotional,
     inventoryEpsilon: risk.inventoryEpsilon,
     maxTimeAboveEpsilonMs: risk.maxTimeAboveEpsilonMs,
+    riskLimitBreachLogCooldownMs: risk.riskLimitBreachLogCooldownMs,
   };
 }
 
@@ -180,14 +185,38 @@ export async function runTrader(argv: readonly string[]): Promise<void> {
 
   const positionLedger = new PositionLedger(positionLedgerConfigFromRisk(session.config.risk), session.log);
 
+  const apiKey = session.config.credentials.apiKey;
+  const apiSecret = session.config.credentials.apiSecret;
+
+  let positionSeeds: Map<string, { readonly netQty: number; readonly markPrice: number }> | undefined;
+  if (session.venue.execution !== undefined && apiKey && apiSecret) {
+    const creds = { apiKey, apiSecret };
+    const nowMs = session.clock.monotonicNowMs();
+    const marks = new Map<string, number>();
+    positionSeeds = new Map();
+    for (const s of specs) {
+      try {
+        const row = await fetchUsdMPositionRiskRow(session.venue.rest, creds, s.symbol);
+        positionLedger.seedPosition(s.symbol, row.netQty, nowMs);
+        positionSeeds.set(s.symbol, { netQty: row.netQty, markPrice: row.markPrice });
+        if (row.markPrice > 0) marks.set(s.symbol, row.markPrice);
+      } catch {
+        session.log.warn({ event: "ledger.seed_failed", symbol: s.symbol }, "ledger.seed_failed");
+      }
+    }
+    positionLedger.applySeedMarksForGlobalNotional(marks);
+    session.log.info(
+      { event: "ledger.bootstrap_seed_complete", symbolCount: specs.length },
+      "ledger.bootstrap_seed_complete",
+    );
+  }
+
   const lossGuard = new LossGuard({
     sessionLossCapQuote: session.config.risk.sessionLossCapQuote,
     dailyLossCapQuote: session.config.risk.dailyLossCapQuote ?? session.config.risk.sessionLossCapQuote,
     cooldownMs: 60_000,
     allowTradingAfterKill: false,
   });
-  const apiKey = session.config.credentials.apiKey;
-  const apiSecret = session.config.credentials.apiSecret;
   if (apiKey && apiSecret) {
     activeUserStreamCoordinator = new AccountUserStreamCoordinator({
       rest: session.venue.rest,
@@ -200,7 +229,10 @@ export async function runTrader(argv: readonly string[]): Promise<void> {
   }
 
   const runners: SymbolRunnerPort = session.config.features.useWorkerThreads
-    ? new WorkerSymbolRunnerPort({ session })
+    ? new WorkerSymbolRunnerPort({
+        session,
+        ...(positionSeeds !== undefined ? { positionSeeds } : {}),
+      })
     : new MainThreadSymbolRunner({
         session,
         monotonicNowMs: () => session.clock.monotonicNowMs(),
@@ -215,8 +247,8 @@ export async function runTrader(argv: readonly string[]): Promise<void> {
   activeUserStreamCoordinator?.registerFillListener((fill) => {
     runners.relayLedgerFill?.(fill);
   });
-  const cancelAllForSymbol = async (sym: string): Promise<void> => {
-    await session.venue.execution?.cancelAll(sym);
+  const cancelAllForSymbol = async (sym: string, ctx?: OrderActionContext): Promise<void> => {
+    await session.venue.execution?.cancelAll(sym, ctx);
   };
   const supervisor = new Supervisor(
     {
@@ -250,7 +282,7 @@ export async function runTrader(argv: readonly string[]): Promise<void> {
           fetchNetQty: (sym) => fetchUsdMNetPositionQty(session.venue.rest, creds, sym),
           log: session.log,
           requestQuotingHalt: (sym) => {
-            supervisor.broadcast({ type: "HALT_QUOTING", reason: `position_drift:${sym}` });
+            supervisor.haltQuotingForSymbol(sym, `position_drift:${sym}`);
           },
         });
       }, session.config.reconciliationIntervalMs),

@@ -1,16 +1,31 @@
 import type { AppConfig } from "../../config/schema.js";
 import type { EffectiveFees, SymbolSpec } from "../../infrastructure/binance/types.js";
+import { buildFairValueQuote } from "../../domain/liquidity/fair-value.js";
+import {
+  diffTargetVsWorking,
+  quoteIntentToTargetBook,
+} from "../../domain/liquidity/target-book.js";
+import { passesEdgeGate } from "../../domain/liquidity/edge-gate.js";
+import {
+  initialRegimeFsmMemory,
+  liquidityRegimeSpreadMultiplier,
+  stepLiquidityRegimeFsm,
+  type LiquidityRegimeState,
+} from "../../domain/liquidity/regime-state-machine.js";
 import { mapBinanceOrderError } from "../../infrastructure/binance/signed-rest-orders.js";
 import type { BootstrapSymbolDecision } from "./bootstrap-exchange.js";
 import { resolveExecutionDirective, type DeRiskExitPlan } from "../../domain/quoting/execution-directive.js";
+import { ticksBetween } from "../../domain/quoting/hybrid-quoting.js";
 import type { QuotingInputs, QuoteIntent } from "../../domain/quoting/types.js";
 import type { QuotingSnapshot } from "../ports/quoting.js";
 import type { InventoryReader } from "../ports/inventory-reader.js";
 import type { LoggerPort } from "../ports/logger-port.js";
-import type { ExecutionService } from "./execution-service.js";
+import type { ExecutionService, OrderActionContext } from "./execution-service.js";
 import type { MarkoutPolicy } from "./markout-policy.js";
 import type { MarkoutTracker } from "./markout-tracker.js";
+import type { PortfolioMarkCoordinator } from "./portfolio-mark-coordinator.js";
 import type { PositionLedger } from "./position-ledger.js";
+import { evaluateGlobalPortfolioGate, resolveBetaToRef } from "./portfolio-gate.js";
 import { canPlaceDeRiskExit, canPlaceQuoteIntent } from "./pre-trade-risk.js";
 
 export function resolveAcceptedMinSpreadTicks(
@@ -72,7 +87,8 @@ export interface QuotingOrchestratorDeps {
   readonly getSnapshot: () => QuotingSnapshot;
   readonly isHalted: () => boolean;
   readonly monotonicNowMs: () => number;
-  readonly effectiveMinSpreadTicks: number;
+  /** Static ticks or resolver (e.g. regime throttle multiplies spread each tick). */
+  readonly effectiveMinSpreadTicks: number | (() => number);
   readonly positionLedger: PositionLedger;
   readonly createInventoryReader: (markPx: number, nowMs: number) => InventoryReader;
   /** Per-symbol markout when `features.markoutFeedbackEnabled` (runner-local tracker). */
@@ -80,6 +96,17 @@ export interface QuotingOrchestratorDeps {
     readonly symbol: string;
     readonly tracker: MarkoutTracker;
     readonly policy: MarkoutPolicy;
+  };
+  /** EWMA σ of log-mid — optional volatility hurdle for edge gate when `risk.rvEnabled`. */
+  readonly getSigmaLn?: () => number | undefined;
+  /**
+   * Cross-symbol gross gate (main thread). With `worker_threads`, omit or accept partial marks
+   * (each worker only records its own symbol).
+   */
+  readonly portfolioGate?: {
+    readonly symbols: readonly string[];
+    readonly specsBySymbol: ReadonlyMap<string, SymbolSpec>;
+    readonly marks: PortfolioMarkCoordinator;
   };
 }
 
@@ -91,10 +118,12 @@ export class QuotingOrchestrator {
   private readonly lastWarnLogMsByEvent = new Map<string, number>();
   private staleBookUnavailableSinceMs: number | undefined;
   private lastStaleBookAttentionLogMs = 0;
+  private regimeFsmMemory = initialRegimeFsmMemory();
+  private liquidityRegimeState: LiquidityRegimeState = "COLLECT";
+  private fairValueFallbackLogged = false;
 
   constructor(deps: QuotingOrchestratorDeps) {
     this.deps = deps;
-    void deps.fees;
   }
 
   private rateLimitedSkipLog(reason: string, now: number): boolean {
@@ -110,11 +139,13 @@ export class QuotingOrchestrator {
     this.deps.log.debug({ event: "quoting.skip", reason, ...extra }, "quoting.skip");
   }
 
-  /** Rate-limited warn (RFC §7) — uses same cadence as reprice to avoid log storms. */
+  /** Rate-limited warn — `quoting.warnLogCooldownMs` (default 60s); `0` falls back to `repriceMinIntervalMs`. */
   private emitWarnEvent(event: string, now: number, fields: Record<string, unknown>): void {
-    const interval = this.deps.cfg.quoting.repriceMinIntervalMs;
-    const last = this.lastWarnLogMsByEvent.get(event) ?? 0;
-    if (now - last < interval) return;
+    const q = this.deps.cfg.quoting;
+    const interval =
+      q.warnLogCooldownMs > 0 ? q.warnLogCooldownMs : q.repriceMinIntervalMs;
+    const last = this.lastWarnLogMsByEvent.get(event);
+    if (last !== undefined && now - last < interval) return;
     this.lastWarnLogMsByEvent.set(event, now);
     this.deps.log.warn({ event, symbol: this.deps.spec.symbol, ...fields }, event);
   }
@@ -216,40 +247,168 @@ export class QuotingOrchestrator {
     }
 
     const markPx = (bb + ba) / 2;
+    const positionRow = this.deps.positionLedger.getPosition(this.deps.spec.symbol);
+    const symbolNetQty = positionRow.netQty;
+    this.deps.portfolioGate?.marks.record(this.deps.spec.symbol, markPx);
+
     const mf = this.deps.markoutFeedback;
     if (mf !== undefined && cfg.features.markoutFeedbackEnabled) {
       mf.tracker.onMid(mf.symbol, markPx, now);
-      mf.tracker.collectDueSamples(now);
+      const markoutSamples = mf.tracker.collectDueSamples(now);
+      for (const s of markoutSamples) {
+        this.deps.log.debug(
+          {
+            event: "liquidity.markout_sample",
+            symbol: mf.symbol,
+            liquidityEngineVersion: "p3",
+            fillId: s.fillId,
+            horizonMs: s.horizonMs,
+            value: s.value,
+            reliable: s.reliable,
+            ...(s.liquidityRegimeState !== undefined
+              ? { liquidityRegimeState: s.liquidityRegimeState }
+              : {}),
+          },
+          "liquidity.markout_sample",
+        );
+      }
     }
     const markoutExtraTicks =
       mf !== undefined && cfg.features.markoutFeedbackEnabled ? mf.policy.widenSpreadTicks() : 0;
     const reader = this.deps.createInventoryReader(markPx, now);
     const inventoryMode = reader.getInventoryStressMode();
     const resolvedBaseOrderQty = resolveBaseOrderQty(cfg);
+    const rawBaseTicks =
+      typeof this.deps.effectiveMinSpreadTicks === "function"
+        ? this.deps.effectiveMinSpreadTicks()
+        : this.deps.effectiveMinSpreadTicks;
+
+    const leCfg = cfg.quoting.liquidityEngine;
+    let effectiveSpreadTicks = rawBaseTicks + markoutExtraTicks;
+    let economicsMid = markPx;
+
+    if (leCfg?.enabled === true && leCfg.regimeFsm.enabled === true) {
+      const microScore =
+        ticksBetween(bb, ba, this.deps.spec.tickSize) < rawBaseTicks + markoutExtraTicks ? 1 : 0;
+      const fsmOut = stepLiquidityRegimeFsm({
+        prevState: this.liquidityRegimeState,
+        memory: this.regimeFsmMemory,
+        flowScore: snapshot.toxicity.toxicityScore,
+        microstructureScore: microScore,
+        inventoryNormalized: Math.abs(symbolNetQty) / cfg.risk.maxAbsQty,
+        config: leCfg.regimeFsm,
+      });
+      this.regimeFsmMemory = fsmOut.memory;
+      this.liquidityRegimeState = fsmOut.state;
+      if (mf !== undefined && cfg.features.markoutFeedbackEnabled) {
+        mf.tracker.noteLiquidityRegimeState(fsmOut.state);
+      }
+      if (fsmOut.transitionReason !== undefined) {
+        this.deps.log.info(
+          {
+            event: "liquidity.regime_transition",
+            symbol: this.deps.spec.symbol,
+            liquidityEngineVersion: "p1",
+            state: fsmOut.state,
+            transitionReason: fsmOut.transitionReason,
+          },
+          "liquidity.regime_transition",
+        );
+      }
+      if (fsmOut.state === "OFF") {
+        this.emitWarnEvent("liquidity.regime_off", now, { liquidityEngineVersion: "p1" });
+        return;
+      }
+      const fsmMult = liquidityRegimeSpreadMultiplier(fsmOut.state, leCfg.regimeFsm);
+      effectiveSpreadTicks = Math.max(1, Math.ceil(rawBaseTicks * fsmMult)) + markoutExtraTicks;
+    }
+
+    let fairMid: number | undefined;
+    if (leCfg?.enabled === true && leCfg.fairValue.mode === "microprice") {
+      const bbq = rm.bestBidQty;
+      const baq = rm.bestAskQty;
+      const fv = buildFairValueQuote({
+        mode: "microprice",
+        touch: { bestBid: bb, bestAsk: ba },
+        ...(bbq !== undefined && baq !== undefined
+          ? { topBid: { price: bb, qty: bbq }, topAsk: { price: ba, qty: baq } }
+          : {}),
+      });
+      if (
+        (bbq === undefined || baq === undefined || bbq <= 0 || baq <= 0) &&
+        !this.fairValueFallbackLogged
+      ) {
+        this.fairValueFallbackLogged = true;
+        this.deps.log.info(
+          {
+            event: "liquidity.fair_value_fallback",
+            symbol: this.deps.spec.symbol,
+            liquidityEngineVersion: "p1",
+          },
+          "liquidity.fair_value_fallback",
+        );
+      }
+      fairMid = fv.anchorMid;
+      economicsMid = fv.anchorMid;
+    }
+
+    const regimeSplit =
+      leCfg?.regimeSplit?.enabled === true
+        ? { enabled: true as const, toxicCombineMode: leCfg.regimeSplit.toxicCombineMode }
+        : undefined;
+
+    const skewCfg = leCfg?.inventorySkew;
+    const inventorySkew =
+      leCfg?.enabled === true && skewCfg?.enabled === true
+        ? {
+            enabled: true as const,
+            kappaTicks: skewCfg.kappaTicks,
+            ...(skewCfg.maxShiftTicks !== undefined ? { maxShiftTicks: skewCfg.maxShiftTicks } : {}),
+            netQty: symbolNetQty,
+            maxAbsQty: cfg.risk.maxAbsQty,
+          }
+        : undefined;
+
     const inputs: QuotingInputs = {
       touch: { bestBid: bb, bestAsk: ba },
       toxicityScore: snapshot.toxicity.toxicityScore,
       toxicityTau: cfg.risk.vpinTau,
       rvRegime: snapshot.rvRegime,
-      minSpreadTicks: this.deps.effectiveMinSpreadTicks + markoutExtraTicks,
+      minSpreadTicks: effectiveSpreadTicks,
       tickSize: this.deps.spec.tickSize,
       inventoryMode,
       baseOrderQty: resolvedBaseOrderQty,
+      ...(regimeSplit !== undefined ? { regimeSplit } : {}),
+      ...(leCfg?.enabled === true && leCfg.fairValue.mode === "microprice" && fairMid !== undefined
+        ? { fairMid, fairValueMode: "microprice" as const }
+        : {}),
+      ...(inventorySkew !== undefined ? { inventorySkew } : {}),
     };
-
-    const symbolNetQty = this.deps.positionLedger.getPosition(this.deps.spec.symbol).netQty;
     const directive = resolveExecutionDirective({
       inventoryMode,
       features: { inventoryDeRiskEnabled: cfg.features.inventoryDeRiskEnabled },
-      risk: { deRiskMode: cfg.risk.deRiskMode },
+      risk: {
+        deRiskMode: cfg.risk.deRiskMode,
+        deRiskProfitOnly: cfg.risk.deRiskProfitOnly,
+        deRiskMinProfitTicks: cfg.risk.deRiskMinProfitTicks,
+      },
       hybridInputs: inputs,
       symbolNetQty,
       spec: this.deps.spec,
       touch: { bestBid: bb, bestAsk: ba },
+      ...(positionRow.avgEntryPrice !== undefined ? { avgEntryPrice: positionRow.avgEntryPrice } : {}),
     });
 
     if (directive.kind === "stress_suppressed") {
       this.emitWarnEvent("quoting.de_risk_suppressed", now, { reason: directive.reason });
+      return;
+    }
+
+    if (directive.kind === "de_risk_skipped") {
+      this.emitWarnEvent("quoting.de_risk_profit_gate", now, {
+        skipReason: directive.reason,
+        ...(positionRow.avgEntryPrice !== undefined ? { avgEntryPrice: positionRow.avgEntryPrice } : {}),
+      });
       return;
     }
 
@@ -277,8 +436,19 @@ export class QuotingOrchestrator {
 
       this.lastDeRiskFingerprint = fp;
       try {
-        await execution.cancelAll(this.deps.spec.symbol);
-        await execution.executeDeRisk(this.deps.spec, exit);
+        await execution.cancelAll(this.deps.spec.symbol, {
+          reason: "de_risk_clear_working_orders",
+        });
+        await execution.executeDeRisk(this.deps.spec, exit, {
+          reason: "inventory_de_risk",
+          detail: {
+            mode: exit.mode,
+            side: exit.side,
+            quantity: exit.quantity,
+            limitPrice: exit.limitPrice,
+            directiveReason: exit.reason,
+          },
+        });
         this.deps.log.info(
           {
             event: "quoting.de_risk_placed",
@@ -298,15 +468,109 @@ export class QuotingOrchestrator {
 
     const intent = directive.intent;
 
+    const portfolioCfg = leCfg?.portfolio;
+    const effectiveMaxAbsNotional =
+      leCfg?.enabled === true && portfolioCfg?.betaCapEnabled === true
+        ? cfg.risk.maxAbsNotional / resolveBetaToRef(this.deps.spec.symbol, portfolioCfg.betaToRef)
+        : undefined;
+
     const gate = canPlaceQuoteIntent({
       intent,
       ledger: this.deps.positionLedger,
       cfg: cfg.risk,
       spec: this.deps.spec,
+      ...(effectiveMaxAbsNotional !== undefined ? { effectiveMaxAbsNotional } : {}),
     });
     if (!gate.ok) {
       this.emitSkip("pre_trade_risk", now, { detail: gate.reason });
       return;
+    }
+
+    if (intentHasWorkingLegs(intent)) {
+      if (leCfg?.enabled === true) {
+        const sigmaLn = this.deps.getSigmaLn?.();
+        const edgeResult = passesEdgeGate({
+          fees: this.deps.fees,
+          mid: economicsMid,
+          lambdaSigma: leCfg.edge.lambdaSigma,
+          minEdgeBpsFloor: leCfg.edge.minEdgeBpsFloor,
+          ...(intent.bidPx !== undefined ? { bidPx: intent.bidPx } : {}),
+          ...(intent.askPx !== undefined ? { askPx: intent.askPx } : {}),
+          ...(sigmaLn !== undefined ? { sigmaLn } : {}),
+        });
+
+        if (!edgeResult.ok) {
+          const enforce = leCfg.edge.enforce === true;
+          if (enforce) {
+            this.emitWarnEvent("liquidity.edge_blocked", now, {
+              liquidityEngineVersion: "p0",
+              shadow: false,
+              midPx: economicsMid,
+              bidPx: intent.bidPx,
+              askPx: intent.askPx,
+              hurdleBps: edgeResult.hurdleBps,
+              bidHalfSpreadBps: edgeResult.bidHalfSpreadBps,
+              askHalfSpreadBps: edgeResult.askHalfSpreadBps,
+            });
+            return;
+          }
+          if (leCfg.edge.shadowOnly === true) {
+            this.deps.log.info(
+              {
+                event: "liquidity.edge_blocked",
+                symbol: this.deps.spec.symbol,
+                liquidityEngineVersion: "p0",
+                shadow: true,
+                midPx: economicsMid,
+                bidPx: intent.bidPx,
+                askPx: intent.askPx,
+                hurdleBps: edgeResult.hurdleBps,
+                bidHalfSpreadBps: edgeResult.bidHalfSpreadBps,
+                askHalfSpreadBps: edgeResult.askHalfSpreadBps,
+              },
+              "liquidity.edge_blocked",
+            );
+          }
+        }
+      }
+
+      if (leCfg?.enabled === true && leCfg.portfolio.enforceGlobal === true) {
+        const pg = this.deps.portfolioGate;
+        if (pg !== undefined) {
+          const marks = pg.marks.getMarks();
+          const ev = evaluateGlobalPortfolioGate({
+            symbols: pg.symbols,
+            ledger: this.deps.positionLedger,
+            marks,
+            specs: pg.specsBySymbol,
+            globalMaxAbsNotional: cfg.risk.globalMaxAbsNotional,
+            quoteSymbol: this.deps.spec.symbol,
+            ...(intent.bidPx !== undefined && intent.bidQty !== undefined
+              ? { intentBid: { qty: intent.bidQty, px: intent.bidPx } }
+              : {}),
+            ...(intent.askPx !== undefined && intent.askQty !== undefined
+              ? { intentAsk: { qty: intent.askQty, px: intent.askPx } }
+              : {}),
+            ...(leCfg?.portfolio?.betaCapEnabled === true
+              ? {
+                  betaPortfolio: {
+                    enabled: true,
+                    betaToRef: leCfg.portfolio.betaToRef,
+                  },
+                }
+              : {}),
+          });
+          if (!ev.ok) {
+            this.emitWarnEvent("liquidity.portfolio_blocked", now, {
+              liquidityEngineVersion: "p0",
+              currentGross: ev.currentGross,
+              projectedGross: ev.projectedGross,
+              cap: ev.cap,
+            });
+            return;
+          }
+        }
+      }
     }
 
     try {
@@ -319,7 +583,13 @@ export class QuotingOrchestrator {
             netQty: symbolNetQty,
           });
         }
-        await execution.cancelAll(this.deps.spec.symbol);
+        await execution.cancelAll(this.deps.spec.symbol, {
+          reason: "quote_intent_empty_clear",
+          detail: {
+            regime: intent.regime,
+            inventoryDeRiskEnabled: cfg.features.inventoryDeRiskEnabled,
+          },
+        });
         this.lastIntentFingerprint = undefined;
         return;
       }
@@ -330,8 +600,41 @@ export class QuotingOrchestrator {
       }
 
       this.lastIntentFingerprint = fp;
-      await execution.cancelAll(this.deps.spec.symbol);
-      await execution.placeFromIntent(this.deps.spec, intent);
+
+      const useOmsDiff =
+        leCfg?.enabled === true && leCfg.useLegacyCancelAllRefresh === false;
+
+      if (useOmsDiff) {
+        const target = quoteIntentToTargetBook(intent);
+        const working = await execution.listOpenOrders(this.deps.spec.symbol);
+        const plan = diffTargetVsWorking(target, working);
+        this.deps.log.debug(
+          {
+            event: "liquidity.oms_diff",
+            symbol: this.deps.spec.symbol,
+            liquidityEngineVersion: "p2",
+            cancelN: plan.cancelOrderIds.length,
+            placeN: plan.placeLegs.length,
+          },
+          "liquidity.oms_diff",
+        );
+        const omsCtx: OrderActionContext = {
+          reason: "liquidity_engine_oms_diff",
+          detail: {
+            cancelOrderCount: plan.cancelOrderIds.length,
+            placeLegCount: plan.placeLegs.length,
+          },
+        };
+        await execution.executePlacementPlan(this.deps.spec, plan, omsCtx);
+      } else {
+        await execution.cancelAll(this.deps.spec.symbol, {
+          reason: "liquidity_engine_legacy_refresh",
+        });
+        await execution.placeFromIntent(this.deps.spec, intent, {
+          reason: "liquidity_engine_legacy_quote",
+          detail: { regime: intent.regime },
+        });
+      }
     } catch (err) {
       this.logOrderError(err);
     }

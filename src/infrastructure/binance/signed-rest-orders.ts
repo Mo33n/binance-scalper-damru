@@ -2,7 +2,12 @@
  * SPEC-09 §2.2 — Signed order REST; production passes the rate-limited `BinanceRestClient` from `venue-factory` / workers.
  */
 import type { SymbolSpec } from "./types.js";
-import { signedDeleteJson, signedPostJson, type SignedCredentials } from "./signed-rest.js";
+import {
+  signedDeleteJson,
+  signedGetJson,
+  signedPostJson,
+  type SignedCredentials,
+} from "./signed-rest.js";
 import { BinanceRestClient, BinanceRestError } from "./rest-client.js";
 
 export type OrderSide = "BUY" | "SELL";
@@ -150,6 +155,20 @@ export async function cancelAllOrders(
   await signedDeleteJson<unknown>(
     client,
     "/fapi/v1/allOpenOrders",
+    { symbol, timestamp: Date.now() },
+    creds,
+  );
+}
+
+/** USD-M signed GET `/fapi/v1/openOrders` — returns JSON array (mapped by application layer). */
+export async function signedListOpenOrders(
+  client: BinanceRestClient,
+  creds: SignedCredentials,
+  symbol: string,
+): Promise<unknown> {
+  return signedGetJson<unknown>(
+    client,
+    "/fapi/v1/openOrders",
     { symbol, timestamp: Date.now() },
     creds,
   );

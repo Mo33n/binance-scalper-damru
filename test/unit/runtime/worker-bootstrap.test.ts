@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { AppConfig } from "../../../src/config/schema.js";
+import { quotingSchema, type AppConfig } from "../../../src/config/schema.js";
 import type { SymbolSpec } from "../../../src/infrastructure/binance/types.js";
 import {
   buildWorkerBootstrapPayload,
@@ -35,6 +35,7 @@ const minimalRisk = {
   globalMaxAbsNotional: 25_000,
   inventoryEpsilon: 0,
   maxTimeAboveEpsilonMs: 60_000,
+  riskLimitBreachLogCooldownMs: 60_000,
   warnUtilization: 0.7,
   criticalUtilization: 0.85,
   haltUtilization: 0.95,
@@ -51,7 +52,7 @@ describe("worker-bootstrap (SPEC-08)", () => {
         feeSafetyBufferBps: 1,
       },
       risk: minimalRisk,
-      quoting: { repriceMinIntervalMs: 250, maxBookStalenessMs: 3000 },
+      quoting: quotingSchema.parse({ repriceMinIntervalMs: 250, maxBookStalenessMs: 3000 }),
       features: {
         liveQuotingEnabled: false,
         markoutFeedbackEnabled: false,
@@ -92,6 +93,48 @@ describe("worker-bootstrap (SPEC-08)", () => {
     expect(parsed.configSubset.features.useWorkerThreads).toBe(true);
   });
 
+  it("round-trips optional initialPosition seed", () => {
+    const sessionConfig = {
+      binance: {
+        restBaseUrl: "https://testnet.binancefuture.com",
+        wsBaseUrl: "wss://stream.binancefuture.com/ws",
+        feeRefreshIntervalMs: 86_400_000,
+        feeSafetyBufferBps: 1,
+      },
+      risk: minimalRisk,
+      quoting: quotingSchema.parse({ repriceMinIntervalMs: 250, maxBookStalenessMs: 3000 }),
+      features: {
+        liveQuotingEnabled: false,
+        markoutFeedbackEnabled: false,
+        reconciliationIntervalOverrideEnabled: false,
+        preFundingFlattenEnabled: false,
+        regimeFlagsEnabled: false,
+        inventoryDeRiskEnabled: false,
+        useWorkerThreads: true,
+      },
+      heartbeatIntervalMs: 5000,
+      logLevel: "info",
+      environment: "testnet",
+    } as unknown as AppConfig;
+
+    const built = buildWorkerBootstrapPayload({
+      workerId: "w-BTCUSDT",
+      symbol: "BTCUSDT",
+      spec,
+      sessionConfig,
+      fees: {
+        makerRate: 0.0002,
+        takerRate: 0.0005,
+        bnbDiscountEnabled: false,
+        asOfIso: "2026-01-01T00:00:00.000Z",
+      },
+      decisions: [],
+      initialPosition: { netQty: 0.02, markPrice: 50_000 },
+    });
+    const parsed = parseWorkerBootstrapPayload(JSON.parse(JSON.stringify(built)));
+    expect(parsed.initialPosition).toEqual({ netQty: 0.02, markPrice: 50_000 });
+  });
+
   it("rejects wrong version", () => {
     expect(() =>
       parseWorkerBootstrapPayload({
@@ -107,7 +150,7 @@ describe("worker-bootstrap (SPEC-08)", () => {
             feeSafetyBufferBps: 1,
           },
           risk: minimalRisk,
-          quoting: { repriceMinIntervalMs: 250, maxBookStalenessMs: 3000 },
+          quoting: quotingSchema.parse({ repriceMinIntervalMs: 250, maxBookStalenessMs: 3000 }),
           features: {
             liveQuotingEnabled: false,
             markoutFeedbackEnabled: false,

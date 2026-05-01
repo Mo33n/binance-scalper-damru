@@ -28,11 +28,14 @@
     "globalMaxAbsNotional": 200,
     "inventoryEpsilon": 0,
     "maxTimeAboveEpsilonMs": 45000,
+    "riskLimitBreachLogCooldownMs": 60000,
     "warnUtilization": 0.65,
     "criticalUtilization": 0.8,
     "haltUtilization": 0.9,
     "preFundingFlattenMinutes": 0,
-    "deRiskMode": "passive_touch"
+    "deRiskMode": "passive_touch",
+    "deRiskProfitOnly": false,
+    "deRiskMinProfitTicks": 0
   },
   "features": {
     "liveQuotingEnabled": false,
@@ -49,7 +52,52 @@
   },
   "quoting": {
     "repriceMinIntervalMs": 250,
-    "maxBookStalenessMs": 3000
+    "maxBookStalenessMs": 3000,
+    "warnLogCooldownMs": 60000,
+    "liquidityEngine": {
+      "enabled": true,
+      "useLegacyCancelAllRefresh": true,
+      "edge": {
+        "enforce": false,
+        "shadowOnly": false,
+        "lambdaSigma": 0,
+        "minEdgeBpsFloor": 0
+      },
+      "portfolio": {
+        "enforceGlobal": false,
+        "betaCapEnabled": false,
+        "betaToRef": {}
+      },
+      "regimeSplit": {
+        "enabled": false,
+        "toxicCombineMode": "any"
+      },
+      "twoLegSafety": {
+        "enabled": false
+      },
+      "fairValue": {
+        "mode": "touch"
+      },
+      "inventorySkew": {
+        "enabled": false,
+        "kappaTicks": 0
+      },
+      "regimeFsm": {
+        "enabled": false,
+        "hysteresisSamples": 3,
+        "defensiveSpreadMult": 1.25,
+        "reduceSpreadMult": 1.5,
+        "pausedSpreadMult": 2,
+        "flowDefensiveThreshold": 0.65,
+        "microDefensiveThreshold": 0.5,
+        "inventoryReduceThreshold": 0.75,
+        "flowOffThreshold": 0.95
+      },
+      "quoteTriggers": {
+        "enabled": false,
+        "epsilonTicks": 1
+      }
+    }
   },
   "heartbeatIntervalMs": 5000,
   "heartbeatMissThreshold": 2,
