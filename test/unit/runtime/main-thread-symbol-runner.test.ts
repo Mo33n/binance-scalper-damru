@@ -48,6 +48,17 @@ function makeMinimalSession(input: {
         rvEnabled: false,
         rvTau: 0.0005,
       },
+      quoting: { repriceMinIntervalMs: 250, maxBookStalenessMs: 3000 },
+      features: {
+        liveQuotingEnabled: false,
+        markoutFeedbackEnabled: false,
+        reconciliationIntervalOverrideEnabled: false,
+        preFundingFlattenEnabled: false,
+        regimeFlagsEnabled: false,
+        inventoryDeRiskEnabled: false,
+        useWorkerThreads: false,
+        combinedDepthStream: false,
+      },
     },
     clock: {
       monotonicNowMs: () => 0,

@@ -97,6 +97,7 @@ describe("DepthOrderBook", () => {
       asks: [],
     });
     expect(out.kind).toBe("gap");
+    if (out.kind === "gap") expect(out.reason).toBe("gap_sequence_break");
     expect(b.getResyncRequired()).toBe(true);
   });
 
@@ -116,17 +117,65 @@ describe("DepthOrderBook", () => {
       asks: [],
     });
     expect(out.kind).toBe("gap");
+    if (out.kind === "gap") expect(out.reason).toBe("gap_first_stream_after_snapshot");
     expect(b.getResyncRequired()).toBe(true);
   });
 
-  it("reports staleness as elapsed monotonic time", () => {
+  it("ignores duplicate final update id (stale u)", () => {
     const b = new DepthOrderBook("BTCUSDT", 0.1);
+    b.applySnapshot({
+      lastUpdateId: 100,
+      bids: [["50000", "1"]],
+      asks: [["50000.1", "1"]],
+    });
+    b.applyDiff({
+      symbol: "BTCUSDT",
+      firstUpdateId: 100,
+      finalUpdateId: 101,
+      prevFinalUpdateId: 99,
+      bids: [],
+      asks: [],
+    });
+    const out = b.applyDiff({
+      symbol: "BTCUSDT",
+      firstUpdateId: 101,
+      finalUpdateId: 101,
+      prevFinalUpdateId: 100,
+      bids: [],
+      asks: [],
+    });
+    expect(out.kind).toBe("ignored");
+    if (out.kind === "ignored") expect(out.reason).toBe("ignored_stale_final_id");
+  });
+
+  it("ignores pre-bridge packets with final id below snapshot L", () => {
+    const b = new DepthOrderBook("BTCUSDT", 0.1);
+    b.applySnapshot({
+      lastUpdateId: 100,
+      bids: [["50000", "1"]],
+      asks: [["50000.1", "1"]],
+    });
+    const out = b.applyDiff({
+      symbol: "BTCUSDT",
+      firstUpdateId: 95,
+      finalUpdateId: 99,
+      prevFinalUpdateId: 94,
+      bids: [],
+      asks: [],
+    });
+    expect(out.kind).toBe("ignored");
+    if (out.kind === "ignored") expect(out.reason).toBe("ignored_pre_bridge");
+  });
+
+  it("uses injected clock for staleness (deterministic)", () => {
+    let now = 10_000;
+    const b = new DepthOrderBook("BTCUSDT", 0.1, { nowMs: () => now });
     b.applySnapshot({
       lastUpdateId: 1,
       bids: [["1", "1"]],
       asks: [["2", "1"]],
     });
-    const staleness = b.getStalenessMs((b.getStalenessMs() ?? 0) + 1000);
-    expect(staleness).toBeGreaterThanOrEqual(0);
+    now = 11_500;
+    expect(b.getStalenessMs()).toBe(1500);
   });
 });

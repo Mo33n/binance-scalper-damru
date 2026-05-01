@@ -41,7 +41,8 @@
     "preFundingFlattenEnabled": false,
     "regimeFlagsEnabled": false,
     "inventoryDeRiskEnabled": false,
-    "useWorkerThreads": false
+    "useWorkerThreads": false,
+    "combinedDepthStream": false
   },
   "rollout": {
     "markoutPromotionWindowMs": 86400000

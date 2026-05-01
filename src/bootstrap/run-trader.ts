@@ -21,6 +21,10 @@ import { AccountUserStreamCoordinator } from "../application/services/account-us
 import { reconcileLedgerPositionsVsExchange } from "../application/services/position-reconcile.js";
 import { fetchUsdMNetPositionQty } from "../infrastructure/binance/reconcile-rest.js";
 import { createWsClient } from "../infrastructure/binance/ws-client.js";
+import {
+  allocateDepthGateSharedBuffer,
+  createDepthSnapshotGate,
+} from "../infrastructure/binance/depth-snapshot-gate.js";
 import { MainThreadSymbolRunner } from "../runtime/worker/main-thread-symbol-runner.js";
 import type { SymbolRunnerPort } from "../runtime/worker/symbol-runner.js";
 import { WorkerSymbolRunnerPort } from "../runtime/worker/worker-symbol-runner-port.js";
@@ -151,9 +155,15 @@ export async function runTrader(argv: readonly string[]): Promise<void> {
     argv,
   });
 
+  const depthGateSharedBuffer = ctx.config.features.useWorkerThreads
+    ? allocateDepthGateSharedBuffer()
+    : undefined;
+
   const session: TradingSession = {
     ...bootstrapOnly,
     venue,
+    depthSnapshotGate: createDepthSnapshotGate(ctx.config.binance),
+    ...(depthGateSharedBuffer !== undefined ? { depthGateSharedBuffer } : {}),
   };
 
   ctx.log.info({ event: STARTUP_EVENTS.ready, exchange: ctx.exchange.environment }, "bootstrap.ready");

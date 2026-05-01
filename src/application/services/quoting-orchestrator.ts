@@ -131,7 +131,7 @@ export class QuotingOrchestrator {
     if (first) {
       this.staleBookUnavailableSinceMs = now;
       this.lastStaleBookAttentionLogMs = now;
-      this.deps.log.info(
+      this.deps.log.debug(
         {
           event: "quoting.book_unavailable",
           symbol: this.deps.spec.symbol,
@@ -146,7 +146,7 @@ export class QuotingOrchestrator {
     }
     if (now - this.lastStaleBookAttentionLogMs >= STALE_BOOK_ATTENTION_INTERVAL_MS) {
       this.lastStaleBookAttentionLogMs = now;
-      this.deps.log.info(
+      this.deps.log.debug(
         {
           event: "quoting.book_still_unavailable",
           symbol: this.deps.spec.symbol,
@@ -166,7 +166,7 @@ export class QuotingOrchestrator {
     const started = this.staleBookUnavailableSinceMs;
     this.staleBookUnavailableSinceMs = undefined;
     this.lastStaleBookAttentionLogMs = 0;
-    this.deps.log.info(
+    this.deps.log.debug(
       {
         event: "quoting.book_restored",
         symbol: this.deps.spec.symbol,
@@ -225,6 +225,7 @@ export class QuotingOrchestrator {
       mf !== undefined && cfg.features.markoutFeedbackEnabled ? mf.policy.widenSpreadTicks() : 0;
     const reader = this.deps.createInventoryReader(markPx, now);
     const inventoryMode = reader.getInventoryStressMode();
+    const resolvedBaseOrderQty = resolveBaseOrderQty(cfg);
     const inputs: QuotingInputs = {
       touch: { bestBid: bb, bestAsk: ba },
       toxicityScore: snapshot.toxicity.toxicityScore,
@@ -233,7 +234,7 @@ export class QuotingOrchestrator {
       minSpreadTicks: this.deps.effectiveMinSpreadTicks + markoutExtraTicks,
       tickSize: this.deps.spec.tickSize,
       inventoryMode,
-      baseOrderQty: resolveBaseOrderQty(cfg),
+      baseOrderQty: resolvedBaseOrderQty,
     };
 
     const symbolNetQty = this.deps.positionLedger.getPosition(this.deps.spec.symbol).netQty;

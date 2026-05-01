@@ -12,6 +12,24 @@ Authoritative schema: [`src/config/schema.ts`](../../src/config/schema.ts). Merg
 
 It is **not** a black-box alpha factory. Treat it as **execution + risk scaffolding** where your JSON and flags decide how aggressively you lean into the market.
 
+### 1.1 Depth book logs (`book.*`)
+
+Structured logs from the order-book pipeline (grep these when diagnosing stale quotes or resync storms):
+
+| Event | Level | Meaning |
+|--------|-------|--------|
+| `book.ws_connected` | info | Depth WebSocket open; about to REST-bootstrap. |
+| `book.ws_closed` / `book.ws_error` | warn / error | Transport lost; book desyncs, `onGap` runs (quoting pauses until a fresh snapshot). |
+| `book.projection.resync_start` | info | REST depth snapshot attempt (`phase`: `bootstrap` or `resync`, `attempt` index). |
+| `book.projection.resync_ok` | info | Snapshot fetched and applied for that attempt. |
+| `book.projection.resync_fail` | warn | Attempt failed (e.g. HTTP error); may retry with backoff if retriable. |
+| `book.resync_exhausted` | warn | Gave up after max attempts; book may stay desynced until reconnect or manual action. |
+| `book.resync_required` | warn | Sequence gap or bridge failure; REST resync scheduled (while WS still considered connected). |
+| `book.depth_pending_drop` | warn | Pending diff backlog exceeded cap; oldest events dropped (drop-oldest policy). |
+| `book.starvation_warn` | info | Book staleness exceeded `quoting.maxBookStalenessMs` while WS connected (possible parse/filter starvation). |
+
+**Multi-symbol / combined-depth soak (≥30 min testnet):** [testnet-depth-soak.md](./testnet-depth-soak.md).
+
 ---
 
 ## 2. Prerequisites (non-negotiable)
@@ -122,6 +140,7 @@ Priority order for most desks:
 
 - **`quoting.repriceMinIntervalMs`**: Raise it (e.g. 250 → 400–800 ms) to **slow** the quoting loop **trade-off**: slower reaction to touch moves; less rate-limit and fee churn.
 - **`binance.feeSafetyBufferBps`**: Part of **economic spread floor** at bootstrap; raising it forces **wider** minimum spreads at acceptance — fewer borderline quotes that die to fees.
+- **`binance.maxConcurrentDepthSnapshots`** / **`binance.depthSnapshotMinIntervalMs`**: Cap and pace **REST depth snapshots** process-wide. If logs show many `429` on `/fapi/v1/depth` during multi-symbol resync, lower concurrency (e.g. `1`) and/or raise the interval (e.g. `150–250` ms).
 
 ### 5.5 “Books lie sometimes — don’t quote stale”
 
@@ -144,7 +163,7 @@ Priority order for most desks:
 
 - **`symbols`**: List of USD‑M symbols; bootstrap may **reject** illiquid / gated names.
 - **`risk.defaultMinSpreadTicks`**: Baseline floor; **per-symbol** effective floor can come from **bootstrap spread gate** (`effectiveMinSpreadTicks` on accepted symbols).
-- **`perSymbolOverrides[].minSpreadTicks`**: Surgical wider floor for specific symbols when overrides are applied in your branch (see `config/README.md`).
+- **`perSymbolOverrides[].minSpreadTicks`**: Replaces `risk.defaultMinSpreadTicks` for that symbol in the **bootstrap** fee/spread gate (`resolveBootstrapMinSpreadTicks` → `effectiveMinSpreadTicks` on accepted symbols). See `config/README.md`.
 - **`risk.maxDesiredLeverage`**, **`risk.riskMaxLeverage`**, **`risk.maxOpenNotionalQuote`**: Interact with **leverage selection** at bootstrap — constraining **max leverage** vs **brackets** is how you keep notionals sane before you ever quote.
 
 ---

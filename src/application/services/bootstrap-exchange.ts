@@ -1,4 +1,5 @@
 import type { AppConfig } from "../../config/schema.js";
+import { resolveBootstrapMinSpreadTicks } from "../../config/resolve-bootstrap-min-spread-ticks.js";
 import { createRateLimitedBinanceRestClient } from "./rate-limited-binance-rest-client.js";
 import { monotonicNowMs } from "../../shared/monotonic.js";
 import { fetchExchangeInfo, buildSymbolBootstrap } from "../../infrastructure/binance/exchange-info.js";
@@ -71,7 +72,7 @@ export async function bootstrapExchangeContext(
       s,
       fees,
       refPx,
-      cfg.risk.defaultMinSpreadTicks,
+      resolveBootstrapMinSpreadTicks(cfg, s.symbol),
       cfg.binance.feeSafetyBufferBps,
     );
     if (gate.outcome === "exclude") {

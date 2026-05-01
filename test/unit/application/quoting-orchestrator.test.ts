@@ -75,6 +75,7 @@ const testFeaturesLive: AppConfig["features"] = {
   regimeFlagsEnabled: false,
   inventoryDeRiskEnabled: false,
   useWorkerThreads: false,
+  combinedDepthStream: false,
 };
 
 const testFeaturesOff: AppConfig["features"] = {
@@ -193,7 +194,7 @@ describe("QuotingOrchestrator (SPEC-05)", () => {
     await orch.tick();
     expect(cancelAll).not.toHaveBeenCalled();
     expect(placeFromIntent).not.toHaveBeenCalled();
-    const attention = infoMock.mock.calls.find(
+    const attention = debugMock.mock.calls.find(
       (c) => (c[0] as { event?: string }).event === "quoting.book_unavailable",
     );
     expect(attention?.[0]).toMatchObject({
@@ -325,7 +326,7 @@ describe("QuotingOrchestrator (SPEC-05)", () => {
     await orch.tick();
     stale = false;
     await orch.tick();
-    const restored = infoMock.mock.calls.find(
+    const restored = debugMock.mock.calls.find(
       (c) => (c[0] as { event?: string }).event === "quoting.book_restored",
     );
     expect(restored?.[0]).toMatchObject({ event: "quoting.book_restored" });

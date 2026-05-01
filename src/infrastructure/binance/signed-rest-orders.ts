@@ -42,7 +42,14 @@ export interface OrderErrorMapping {
 
 export function normalizeOrderRequest(r: NewOrderRequest, spec: SymbolSpec): NewOrderRequest {
   const price = roundStep(r.price, spec.tickSize);
-  const quantity = roundStep(r.quantity, spec.stepSize);
+  let quantity = roundStep(r.quantity, spec.stepSize);
+  const px = price * spec.contractSize;
+  if (!r.reduceOnly && price > 0 && spec.contractSize > 0) {
+    const minQtyForNotional = ceilStep(spec.minNotional / px, spec.stepSize);
+    if (quantity < minQtyForNotional) {
+      quantity = minQtyForNotional;
+    }
+  }
   const notional = price * quantity * spec.contractSize;
   if (notional < spec.minNotional) {
     throw new Error(
@@ -150,6 +157,13 @@ export async function cancelAllOrders(
 
 function roundStep(x: number, step: number): number {
   const raw = Math.floor(x / step) * step;
+  const decimals = stepDecimals(step);
+  return Number(raw.toFixed(decimals));
+}
+
+/** Smallest step-aligned quantity ≥ x (USD-M LOT_SIZE grid). */
+function ceilStep(x: number, step: number): number {
+  const raw = Math.ceil(x / step - 1e-12) * step;
   const decimals = stepDecimals(step);
   return Number(raw.toFixed(decimals));
 }

@@ -7,10 +7,19 @@ export interface DepthSnapshotRaw {
   readonly asks: readonly [string, string][];
 }
 
+/** Typed reasons for hot projection paths (task list P0.4 / RFC §6). */
+export type DepthProjectionReason =
+  | "ignored_unsynchronized"
+  | "ignored_stale_final_id"
+  | "ignored_pre_bridge"
+  | "gap_first_stream_after_snapshot"
+  | "gap_sequence_break"
+  | "gap_bridge_not_found";
+
 export type DepthApplyResult =
   | { readonly kind: "updated"; readonly snapshot: BookSnapshot }
-  | { readonly kind: "ignored" }
-  | { readonly kind: "gap" };
+  | { readonly kind: "ignored"; readonly reason: DepthProjectionReason }
+  | { readonly kind: "gap"; readonly reason: DepthProjectionReason };
 
 /**
  * Reorders buffered websocket diffs so the first applied event overlaps REST snapshot `lastUpdateId` (L).
@@ -46,6 +55,7 @@ export function orderDepthDiffsForBridge(
 export class DepthOrderBook {
   private readonly symbol: string;
   private readonly tickSize: number;
+  private readonly nowMs: () => number;
   private lastFinalUpdateId?: number;
   private synchronized = false;
   /** Per Binance futures book sync: first diff after REST must overlap `[U,u]` with snapshot `lastUpdateId`. */
@@ -55,9 +65,10 @@ export class DepthOrderBook {
   private bids = new Map<number, number>();
   private asks = new Map<number, number>();
 
-  constructor(symbol: string, tickSize: number) {
+  constructor(symbol: string, tickSize: number, opts?: { readonly nowMs?: () => number }) {
     this.symbol = symbol;
     this.tickSize = tickSize;
+    this.nowMs = opts?.nowMs ?? monotonicNowMs;
   }
 
   applySnapshot(raw: DepthSnapshotRaw): BookSnapshot {
@@ -69,19 +80,19 @@ export class DepthOrderBook {
     this.snapshotAnchorId = raw.lastUpdateId;
     this.awaitingSnapshotBridge = true;
     this.synchronized = true;
-    this.lastAppliedMonotonicMs = monotonicNowMs();
+    this.lastAppliedMonotonicMs = this.nowMs();
     return this.currentSnapshot(undefined);
   }
 
   applyDiff(evt: DepthDiffEvent): DepthApplyResult {
     if (!this.synchronized || this.lastFinalUpdateId === undefined) {
-      return { kind: "ignored" };
+      return { kind: "ignored", reason: "ignored_unsynchronized" };
     }
 
     if (this.awaitingSnapshotBridge && this.snapshotAnchorId !== undefined) {
       const L = this.snapshotAnchorId;
       if (evt.finalUpdateId < L) {
-        return { kind: "ignored" };
+        return { kind: "ignored", reason: "ignored_pre_bridge" };
       }
       const overlaps = evt.firstUpdateId <= L && evt.finalUpdateId >= L;
       if (!overlaps) {
@@ -89,21 +100,21 @@ export class DepthOrderBook {
           this.synchronized = false;
           this.awaitingSnapshotBridge = false;
           this.snapshotAnchorId = undefined;
-          return { kind: "gap" };
+          return { kind: "gap", reason: "gap_first_stream_after_snapshot" };
         }
-        return { kind: "ignored" };
+        return { kind: "ignored", reason: "ignored_pre_bridge" };
       }
       applyNumericLevels(this.bids, evt.bids);
       applyNumericLevels(this.asks, evt.asks);
       this.lastFinalUpdateId = evt.finalUpdateId;
       this.awaitingSnapshotBridge = false;
       this.snapshotAnchorId = undefined;
-      this.lastAppliedMonotonicMs = monotonicNowMs();
+      this.lastAppliedMonotonicMs = this.nowMs();
       return { kind: "updated", snapshot: this.currentSnapshot(evt.eventTimeMs) };
     }
 
     if (evt.finalUpdateId <= this.lastFinalUpdateId) {
-      return { kind: "ignored" };
+      return { kind: "ignored", reason: "ignored_stale_final_id" };
     }
 
     const expectedPrev = this.lastFinalUpdateId;
@@ -115,13 +126,13 @@ export class DepthOrderBook {
       this.synchronized = false;
       this.awaitingSnapshotBridge = false;
       this.snapshotAnchorId = undefined;
-      return { kind: "gap" };
+      return { kind: "gap", reason: "gap_sequence_break" };
     }
 
     applyNumericLevels(this.bids, evt.bids);
     applyNumericLevels(this.asks, evt.asks);
     this.lastFinalUpdateId = evt.finalUpdateId;
-    this.lastAppliedMonotonicMs = monotonicNowMs();
+    this.lastAppliedMonotonicMs = this.nowMs();
     return { kind: "updated", snapshot: this.currentSnapshot(evt.eventTimeMs) };
   }
 
@@ -130,7 +141,11 @@ export class DepthOrderBook {
     return this.currentSnapshot(undefined);
   }
 
-  getStalenessMs(nowMs = monotonicNowMs()): number | undefined {
+  getLastBookApplyMonotonicMs(): number | undefined {
+    return this.lastAppliedMonotonicMs;
+  }
+
+  getStalenessMs(nowMs = this.nowMs()): number | undefined {
     if (this.lastAppliedMonotonicMs === undefined) return undefined;
     return Math.max(0, nowMs - this.lastAppliedMonotonicMs);
   }

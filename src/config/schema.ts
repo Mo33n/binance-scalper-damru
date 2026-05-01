@@ -13,6 +13,11 @@ export const featuresSchema = z.object({
   inventoryDeRiskEnabled: z.boolean().default(false),
   /** SPEC-08 — isolate each symbol in `worker_threads` (default off until stable). */
   useWorkerThreads: z.boolean().default(false),
+  /**
+   * Multiplex USD-M `@depth` over one `/stream?streams=...` socket (main thread only).
+   * Incompatible with `useWorkerThreads` (validated in `superRefine`).
+   */
+  combinedDepthStream: z.boolean().default(false),
 });
 
 export const rolloutSchema = z.object({
@@ -50,6 +55,14 @@ export const appConfigSchema = z
     wsBaseUrl: z.string().url(),
     feeRefreshIntervalMs: z.number().positive().default(86_400_000),
     feeSafetyBufferBps: z.number().nonnegative().default(1),
+    /**
+     * Process-wide limit on concurrent REST `/fapi/v1/depth` snapshot fetches (multi-symbol 429 mitigation).
+     */
+    maxConcurrentDepthSnapshots: z.number().int().positive().max(32).default(2),
+    /**
+     * Minimum wall-clock gap between *starting* depth snapshots on the shared gate (0 = no extra spacing).
+     */
+    depthSnapshotMinIntervalMs: z.number().int().nonnegative().default(100),
   }),
   symbols: z.array(z.string().min(1)),
   risk: z.object({
@@ -87,6 +100,7 @@ export const appConfigSchema = z
     regimeFlagsEnabled: false,
     inventoryDeRiskEnabled: false,
     useWorkerThreads: false,
+    combinedDepthStream: false,
   }),
   rollout: rolloutSchema.default({ markoutPromotionWindowMs: 86_400_000 }),
   quoting: quotingSchema.default({
@@ -112,6 +126,14 @@ export const appConfigSchema = z
         message:
           "credentialProfile must match environment (prevents mixing live trading with a testnet credential profile label)",
         path: ["credentialProfile"],
+      });
+    }
+    if (data.features.combinedDepthStream && data.features.useWorkerThreads) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          "combinedDepthStream is not supported with useWorkerThreads (each worker needs its own depth transport)",
+        path: ["features", "combinedDepthStream"],
       });
     }
   });

@@ -26,7 +26,9 @@ export function createWsClient(baseWsUrl: string, log?: LoggerPort): WsClient {
         whenOpen() {
           return new Promise<void>((resolve, reject) => {
             if (ws.readyState === WebSocket.OPEN) {
-              queueMicrotask(() => resolve());
+              queueMicrotask(() => {
+                resolve();
+              });
               return;
             }
             if (

@@ -51,6 +51,8 @@ Schema version: **`configSchemaVersion: "1"`** — bump only when you mean it.
 
 - **`binance.feeRefreshIntervalMs`**: how often you intend to refresh effective fee assumptions from the exchange.
 - **`binance.feeSafetyBufferBps`**: extra bps cushion in the spread-vs-fee gate so you don’t quote through noise and call it edge.
+- **`binance.maxConcurrentDepthSnapshots`**: process-wide cap on concurrent REST `/fapi/v1/depth` snapshots (default `2`). Lower when multi-symbol runs hit HTTP 429 on depth.
+- **`binance.depthSnapshotMinIntervalMs`**: minimum wall-clock gap between *starting* depth snapshots (default `100`; `0` disables).
 
 ---
 
@@ -93,6 +95,8 @@ Optional entries in your `CONFIG_PATH` JSON:
   ]
 }
 ```
+
+- **`minSpreadTicks`:** used as the **configured floor** for that symbol’s fee/spread gate at **bootstrap** (`evaluateSpreadFloor` in `bootstrap-exchange`). Last matching `symbol` entry in the array wins. Omitted symbols use `risk.defaultMinSpreadTicks` only.
 
 Unknown **`configSchemaVersion`** at the **root** → startup dies loudly (by design).
 

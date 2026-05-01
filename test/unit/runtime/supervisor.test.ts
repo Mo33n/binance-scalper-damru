@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi, type Mock } from "vitest";
 import { LossGuard } from "../../../src/application/services/loss-guard.js";
 import { serializeEnvelope } from "../../../src/runtime/messaging/envelope.js";
 import type { SymbolRunnerHandle, SymbolRunnerPort } from "../../../src/runtime/worker/symbol-runner.js";
@@ -180,10 +180,9 @@ describe("Supervisor", () => {
       }),
     );
 
-    expect(h.sendCommand).toHaveBeenCalledWith({
-      type: "HALT_QUOTING",
-      reason: "regime_book_stress",
-    });
+    expect((h.sendCommand as Mock).mock.calls).toEqual([
+      [{ type: "HALT_QUOTING", reason: "regime_book_stress" }],
+    ]);
   });
 
   it("SPEC-09 T03: loss guard trips HALT_QUOTING session_loss_cap", () => {
@@ -223,9 +222,6 @@ describe("Supervisor", () => {
       }),
     );
 
-    expect(h.sendCommand).toHaveBeenCalledWith({
-      type: "HALT_QUOTING",
-      reason: "session_loss_cap",
-    });
+    expect((h.sendCommand as Mock).mock.calls).toEqual([[{ type: "HALT_QUOTING", reason: "session_loss_cap" }]]);
   });
 });

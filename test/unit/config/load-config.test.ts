@@ -104,6 +104,56 @@ describe("loadConfig", () => {
 });
 
 describe("appConfigSchema", () => {
+  it("rejects combinedDepthStream with useWorkerThreads", () => {
+    const r = appConfigSchema.safeParse({
+      configSchemaVersion: "1",
+      environment: "testnet",
+      binance: {
+        restBaseUrl: "https://testnet.binancefuture.com",
+        wsBaseUrl: "wss://stream.binancefuture.com/ws",
+      },
+      symbols: ["BTCUSDT"],
+      risk: {
+        sessionLossCapQuote: 100,
+        maxOpenNotionalQuote: 1000,
+        defaultMinSpreadTicks: 5,
+        maxDesiredLeverage: 50,
+        riskMaxLeverage: 20,
+        vpinBucketVolume: 1,
+        vpinBucketBasis: "base",
+        vpinEwmaN: 5,
+        vpinStaleFlushMs: 60_000,
+        vpinTau: 0.6,
+        rvEnabled: false,
+        rvTau: 0.0005,
+        maxAbsQty: 1,
+        maxAbsNotional: 10_000,
+        globalMaxAbsNotional: 25_000,
+        inventoryEpsilon: 0,
+        maxTimeAboveEpsilonMs: 60_000,
+        warnUtilization: 0.7,
+        criticalUtilization: 0.85,
+        haltUtilization: 0.95,
+        preFundingFlattenMinutes: 0,
+        deRiskMode: "passive_touch",
+      },
+      features: {
+        liveQuotingEnabled: false,
+        markoutFeedbackEnabled: false,
+        reconciliationIntervalOverrideEnabled: false,
+        preFundingFlattenEnabled: false,
+        regimeFlagsEnabled: false,
+        inventoryDeRiskEnabled: false,
+        useWorkerThreads: true,
+        combinedDepthStream: true,
+      },
+      quoting: { repriceMinIntervalMs: 250, maxBookStalenessMs: 3000 },
+      credentials: {},
+      perSymbolOverrides: [],
+    });
+    expect(r.success).toBe(false);
+  });
+
   it("rejects unknown root configSchemaVersion", () => {
     const r = appConfigSchema.safeParse({
       configSchemaVersion: "2",

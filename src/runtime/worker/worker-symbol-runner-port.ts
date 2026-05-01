@@ -71,8 +71,13 @@ export class WorkerSymbolRunnerPort implements SymbolRunnerPort {
     });
 
     const workerUrl = symbolWorkerEntryUrl();
+    const sab = this.deps.session.depthGateSharedBuffer;
+    const workerData: { payload: unknown; depthGateSab?: SharedArrayBuffer } = { payload };
+    if (sab !== undefined) {
+      workerData.depthGateSab = sab;
+    }
     const worker = new Worker(workerUrl, {
-      workerData: { payload },
+      workerData,
     });
 
     worker.on("message", (data: unknown) => {

@@ -22,6 +22,8 @@ import type { FillEvent } from "../../infrastructure/binance/user-stream.js";
 import type { EffectiveFees, SymbolSpec } from "../../infrastructure/binance/types.js";
 import { serializeEnvelope } from "../messaging/envelope.js";
 import type { HeartbeatPayload, SupervisorCommand } from "../messaging/types.js";
+import type { BinanceBookFeedAdapter } from "../../infrastructure/binance/binance-market-data-adapters.js";
+import type { DepthSnapshotGatePort } from "../../infrastructure/binance/depth-snapshot-gate.js";
 import {
   createMarketDataControllerForSession,
   type MarketDataController,
@@ -49,6 +51,9 @@ export interface SymbolLoopStartParams {
   readonly rest: MarketDataHostContext["venue"]["rest"];
   /** Invoked once after cleanup (main-thread runner notifies supervisor via `onExit`). */
   readonly onStopped?: () => void;
+  /** When set, depth uses this shared adapter (`features.combinedDepthStream` on main thread). */
+  readonly sharedBookFeed?: BinanceBookFeedAdapter;
+  readonly depthSnapshotGate: DepthSnapshotGatePort;
 }
 
 type LoopState = "running" | "stopping" | "stopped";
@@ -106,8 +111,9 @@ export class SymbolLoopRuntime {
     );
 
     const host: MarketDataHostContext = {
-      config: { binance: params.binance },
+      config: { binance: params.binance, quoting: params.quoting },
       venue: { rest: params.rest },
+      depthSnapshotGate: params.depthSnapshotGate,
     };
 
     let marketData: MarketDataController | undefined;
@@ -118,6 +124,7 @@ export class SymbolLoopRuntime {
         this.signalEngine,
         params.monotonicNowMs,
         params.log,
+        params.sharedBookFeed !== undefined ? { sharedBook: params.sharedBookFeed } : undefined,
       );
       void marketData.start().catch((err: unknown) => {
         const msg = err instanceof Error ? err.message : String(err);

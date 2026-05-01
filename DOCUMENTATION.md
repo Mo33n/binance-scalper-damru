@@ -18,4 +18,8 @@
 
 **Operator runbook:** [docs/operator/running-the-trader-and-parameters.md](docs/operator/running-the-trader-and-parameters.md) — commands, modes, and trading-focused parameter meanings.
 
+**Testnet market-data soak:** [docs/operator/testnet-depth-soak.md](docs/operator/testnet-depth-soak.md).
+
+**ADRs:** [docs/adr/0001-depth-pipeline-operational-decisions.md](docs/adr/0001-depth-pipeline-operational-decisions.md) — depth reconnect, pending cap, REST budget.
+
 **Rollout & safety (SPEC-10):** [docs/rollout/promotion-checklist.md](docs/rollout/promotion-checklist.md), [docs/rollout/testnet-limitations.md](docs/rollout/testnet-limitations.md), [docs/rollout/emergency-stop.md](docs/rollout/emergency-stop.md), [docs/architecture/feature-flags.md](docs/architecture/feature-flags.md).

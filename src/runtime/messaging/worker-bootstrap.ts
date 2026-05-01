@@ -42,6 +42,8 @@ export const workerBootstrapPayloadSchema = z.object({
       wsBaseUrl: z.string().url(),
       feeRefreshIntervalMs: z.number(),
       feeSafetyBufferBps: z.number(),
+      maxConcurrentDepthSnapshots: z.number().int().positive().max(32).default(2),
+      depthSnapshotMinIntervalMs: z.number().int().nonnegative().default(100),
     }),
     /** Parent-built plain JSON; validated structurally on parent — worker trusts after zod shell parse. */
     risk: z.any(),

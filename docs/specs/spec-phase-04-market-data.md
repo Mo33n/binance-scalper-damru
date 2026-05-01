@@ -25,6 +25,12 @@ For each running symbol, establish **Binance USD-M** depth + aggTrade streams us
 | Create | `src/runtime/worker/market-data-controller.ts` (or fold into `main-thread-symbol-runner.ts` if <400 LOC — **prefer separate file** for testability) |
 | Modify | `src/runtime/worker/main-thread-symbol-runner.ts` — lifecycle calls into controller |
 | Create | `test/integration/market-data-runner.test.ts` — mock WS |
+| Depth pipeline | `src/infrastructure/binance/depth-session.ts` — pending queue, bridge microtasks, REST resync w/ backoff, transport gating |
+| Depth parse | `src/infrastructure/binance/depth-stream-parse.ts` — JSON → `DepthDiffEvent`, frame limits |
+| Book projection | `src/infrastructure/binance/depth-order-book.ts` — snapshot + diff apply, gap detection |
+| REST snapshot cap | `src/infrastructure/binance/depth-snapshot-gate.ts` — limit concurrent `/fapi/v1/depth` fetches |
+
+**Reconnect:** `BinanceBookFeedAdapter` runs a per-symbol WS loop: on disconnect/error it logs `book.ws_closed` / `book.ws_error`, calls `DepthSession.notifyTransportDisconnect()` (desync + `onGap`), backs off, reconnects, and runs `bootstrapFromRest()` again.
 
 ---
 
